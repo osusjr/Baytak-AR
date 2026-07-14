@@ -33,6 +33,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
   String? _stage;
 
   bool? _aiReady; // null = still checking
+  String _provider = 'AI'; // resolved provider label, e.g. GPT-5.6 Sol
   bool _analyzing = false;
   LayoutPlan? _aiPlan;
 
@@ -62,6 +63,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
     final prefs = await SharedPreferences.getInstance();
     final p = prefs.getString('blueprint_path');
     final ready = await aiConfigured();
+    final provider = await aiProviderLabel();
     if (!mounted) return;
     setState(() {
       if (p != null && File(p).existsSync()) {
@@ -69,6 +71,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
         _useUpload = true;
       }
       _aiReady = ready;
+      _provider = provider;
     });
   }
 
@@ -130,12 +133,14 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
       final plan = await analyzeBlueprint(File(_uploadedPath!));
       if (!mounted) return;
       setState(() => _aiPlan = plan);
+      final by = aiLastAnsweredBy;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(
             content: Text(
-                'AI read ${plan.runs.length} run(s) - review, then open '
-                'the studio')));
+                'AI read ${plan.runs.length} run(s)'
+                '${by == null ? '' : ' - answered by $by'} - review, '
+                'then open the studio')));
     } catch (e) {
       if (!mounted) return;
       _showError('Analysis failed', e);
@@ -146,8 +151,8 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
 
   Future<void> _designOneTap() async {
     if (_uploadedPath == null) return;
-    const stages = [
-      'Reading the drawing (free NVIDIA AI)...',
+    final stages = [
+      'Reading the drawing ($_provider)...',
       'Choosing layout & finish...',
       'Opening the design studio...',
     ];
@@ -173,11 +178,13 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
         _stage = null;
         _aiPlan = p;
       });
+      final by = aiLastAnsweredBy;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(
             content: Text('AI chose a ${KitchenDesign.presetLabels[p.palette] ?? p.palette} '
-                'look - now make it yours')));
+                'look${by == null ? '' : ' (answered by $by)'} - '
+                'now make it yours')));
       _openStudio(p, 'the AI reading of your blueprint');
     } catch (e) {
       if (!mounted) return;
@@ -438,11 +445,11 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
               style: text.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
           Text(
-            'One tap. A free NVIDIA-hosted vision model reads your uploaded '
-            'drawing - measurements, layout, appliances - picks a starting '
-            'look, and the Design studio opens so you can restyle every '
-            'element before this phone builds the 3D kitchen. Nothing to '
-            'type, no account, no key.',
+            'One tap. $_provider reads your uploaded drawing - '
+            'measurements, layout, appliances - picks a starting look, and '
+            'the Design studio opens so you can restyle every element '
+            'before this phone builds the 3D kitchen. Nothing to type in '
+            'the app.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.45),
           ),
@@ -498,8 +505,8 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
           const SizedBox(height: 6),
           Text(
             'The AI reads the drawing and returns the layout for the '
-            'on-device generator. Runs on free NVIDIA-hosted models '
-            '(${aiVisionModels.first} first). Needs internet.',
+            'on-device generator. Answers come from $_provider first, '
+            'with automatic fallbacks. Needs internet.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.4),
           ),

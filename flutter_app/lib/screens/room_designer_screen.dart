@@ -33,6 +33,7 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
   bool _analyzing = false;
   RoomAnalysis? _result;
   bool? _aiReady; // null = still checking
+  String _provider = 'AI'; // resolved provider label
   bool _building = false;
   String? _buildStage;
 
@@ -48,10 +49,12 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
     final prefs = await SharedPreferences.getInstance();
     final p = prefs.getString('room_photo');
     final ready = await aiConfigured();
+    final provider = await aiProviderLabel();
     if (!mounted) return;
     setState(() {
       if (p != null && File(p).existsSync()) _photoPath = p;
       _aiReady = ready;
+      _provider = provider;
     });
   }
 
@@ -280,8 +283,9 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
           Text(
             _aiReady == false
                 ? aiNotConfiguredMessage
-                : 'Runs on free NVIDIA-hosted vision models - nothing to '
-                    'set up in the app. Needs internet.',
+                : 'Answers come from $_provider first, with automatic '
+                    'fallbacks - nothing to set up in the app. '
+                    'Needs internet.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.4),
           ),
