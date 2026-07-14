@@ -4,13 +4,10 @@ import 'dart:io';
 import 'ai_client.dart';
 import 'kitchen_generator.dart';
 
-/// Sends the blueprint image to the Anthropic API (Claude vision) and asks
+/// Sends the blueprint image to a free NVIDIA-hosted vision model and asks
 /// for the kitchen layout as strict JSON, which is defensively parsed into
-/// a [LayoutPlan] for the on-device generator.
-///
-/// The API key is the user's own, entered in the app and stored only on
-/// this device. NOTE for production: a shipped consumer app must not embed
-/// or collect raw API keys - route calls through your own small backend.
+/// a [LayoutPlan] for the on-device generator. No keys are typed in-app -
+/// see ai_client.dart / DemoConfig for how the demo key ships.
 class BlueprintAnalysisException implements Exception {
   BlueprintAnalysisException(this.message);
   final String message;
@@ -59,10 +56,9 @@ classic/family homes, light_oak for bright/small/modern spaces,
 dark_modern for premium/contemporary.
 ''';
 
-Future<LayoutPlan> analyzeBlueprint(File image, String apiKey,
-    {AiProvider provider = AiProvider.gemini}) async {
+Future<LayoutPlan> analyzeBlueprint(File image) async {
   final bytes = await image.readAsBytes();
-  if (bytes.length > 4800000) {
+  if (bytes.length > 15 * 1024 * 1024) {
     throw BlueprintAnalysisException(
         'Image is too large for analysis - re-pick it (the app resizes '
         'gallery picks automatically).');
@@ -73,26 +69,17 @@ Future<LayoutPlan> analyzeBlueprint(File image, String apiKey,
   String text;
   try {
     text = await visionCall(
-      provider: provider,
-      apiKey: apiKey,
       imageBytes: bytes,
       mediaType: mediaType,
       prompt: _prompt,
-      maxTokens: 1200,
     );
   } on AiClientException catch (e) {
     throw BlueprintAnalysisException(e.message);
   }
 
   try {
-    var cleaned = text.trim();
-    if (cleaned.startsWith('```')) {
-      cleaned = cleaned
-          .replaceFirst(RegExp(r'^```[a-zA-Z]*\s*'), '')
-          .replaceFirst(RegExp(r'```\s*$'), '')
-          .trim();
-    }
-    final json = jsonDecode(cleaned) as Map<String, dynamic>;
+    final json =
+        jsonDecode(extractJsonObject(text)) as Map<String, dynamic>;
     final plan = LayoutPlan.fromJson(json);
     if (plan.runs.isEmpty) {
       throw BlueprintAnalysisException(

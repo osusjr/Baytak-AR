@@ -11,15 +11,15 @@ import '../services/analytics.dart';
 import '../services/kitchen_generator.dart';
 import '../services/room_ai.dart';
 import '../theme.dart';
-import 'blueprint_screen.dart';
 import 'model_viewer_screen.dart';
 import 'product_details_screen.dart';
 
-/// Room designer (v13): photograph the empty room -> AI estimates its size
-/// and picks items from the retailer's catalogue that fit the chosen style
-/// -> each pick opens in AR at true scale. Live point-the-camera
-/// measurement and whole-set placement arrive with in-app AR (roadmap);
-/// this photo flow is the honest, working version of that experience.
+/// Room designer (v17): photograph the empty room -> AI (free NVIDIA-hosted
+/// vision models, zero setup) estimates its size and picks items from the
+/// retailer's catalogue that fit the chosen style -> each pick opens in AR
+/// at true scale. Live point-the-camera measurement and whole-set placement
+/// arrive with in-app AR (roadmap); this photo flow is the honest, working
+/// version of that experience.
 class RoomDesignerScreen extends StatefulWidget {
   const RoomDesignerScreen({super.key});
 
@@ -32,8 +32,7 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
   String _style = 'Modern';
   bool _analyzing = false;
   RoomAnalysis? _result;
-  String _apiKey = '';
-  AiProvider _provider = AiProvider.gemini;
+  bool? _aiReady; // null = still checking
   bool _building = false;
   String? _buildStage;
 
@@ -48,16 +47,11 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
   Future<void> _restore() async {
     final prefs = await SharedPreferences.getInstance();
     final p = prefs.getString('room_photo');
-    final prov = prefs.getString('ai_provider') == 'anthropic'
-        ? AiProvider.anthropic
-        : AiProvider.gemini;
-    final k = prefs.getString(
-        prov == AiProvider.gemini ? 'gemini_key' : 'anthropic_key');
+    final ready = await aiConfigured();
     if (!mounted) return;
     setState(() {
       if (p != null && File(p).existsSync()) _photoPath = p;
-      _provider = prov;
-      _apiKey = (k ?? '').trim();
+      _aiReady = ready;
     });
   }
 
@@ -86,15 +80,13 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
   }
 
   Future<void> _analyze() async {
-    if (_photoPath == null || _apiKey.isEmpty) return;
+    if (_photoPath == null || _aiReady != true) return;
     setState(() {
       _analyzing = true;
       _result = null;
     });
     try {
-      final res =
-          await analyzeRoom(File(_photoPath!), _apiKey,
-              style: _style, provider: _provider);
+      final res = await analyzeRoom(File(_photoPath!), style: _style);
       if (!mounted) return;
       setState(() => _result = res);
     } catch (e) {
@@ -180,7 +172,7 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('ROOM DESIGNER v16 - RENDER OK',
+          Text('ROOM DESIGNER v17 - RENDER OK',
               style: text.labelSmall?.copyWith(
                   color: Baytak.olive, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
@@ -286,43 +278,30 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
               style: text.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
           Text(
-            _apiKey.isEmpty
-                ? 'Add an AI key first: Blueprint studio -> AI setup. '
-                    'Gemini keys are free (aistudio.google.com). The key '
-                    'is shared with this screen.'
-                : 'Uses the ${_provider.label} key saved in Blueprint '
-                    'studio. Needs internet.',
+            _aiReady == false
+                ? aiNotConfiguredMessage
+                : 'Runs on free NVIDIA-hosted vision models - nothing to '
+                    'set up in the app. Needs internet.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.4),
           ),
           const SizedBox(height: 10),
-          if (_apiKey.isEmpty)
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
-                onPressed: () async {
-                  await Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => const BlueprintScreen()));
-                  _restore(); // key may have been saved there
-                },
-                child: const Text('Open Blueprint studio to add the key'),
-              ),
-            )
-          else
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed:
-                    (_photoPath != null && !_analyzing) ? _analyze : null,
-                child: _analyzing
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2.4, color: Colors.white))
-                    : const Text('Measure room & suggest furniture'),
-              ),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed:
+                  (_photoPath != null && _aiReady == true && !_analyzing)
+                      ? _analyze
+                      : null,
+              child: _analyzing
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.4, color: Colors.white))
+                  : const Text('Measure room & suggest furniture'),
             ),
+          ),
         ],
       ),
 
@@ -445,8 +424,11 @@ class _PickRow extends StatelessWidget {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(10),
-            child: Image.asset(m.thumb,
-                width: 56, height: 56, fit: BoxFit.cover),
+            child: Image(
+                image: productImage(m.thumb),
+                width: 56,
+                height: 56,
+                fit: BoxFit.cover),
           ),
           const SizedBox(width: 10),
           Expanded(

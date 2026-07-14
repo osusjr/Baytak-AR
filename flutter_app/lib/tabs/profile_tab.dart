@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../data/catalog.dart';
 import '../screens/blueprint_screen.dart';
+import '../screens/design_studio_screen.dart';
 import '../screens/room_designer_screen.dart';
 import '../screens/scan_screen.dart';
 import '../screens/stores_screen.dart';
 import '../services/analytics.dart';
+import '../services/remote_catalog.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/product_cards.dart';
@@ -101,6 +103,18 @@ class ProfileTab extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const BlueprintScreen())),
           ),
           _Row(
+            icon: Icons.palette_rounded,
+            title: 'Kitchen design studio',
+            subtitle: 'Walls, floors, worktops, cabinets, handles - '
+                'restyle every element',
+            onTap: () async {
+              final studio = await DesignStudioScreen.restoreLast();
+              if (!context.mounted) return;
+              Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => studio));
+            },
+          ),
+          _Row(
             icon: Icons.center_focus_strong_rounded,
             title: 'Scan furniture',
             subtitle: 'Guided photo orbit for 3D reconstruction',
@@ -124,10 +138,15 @@ class ProfileTab extends StatelessWidget {
 
           _Section('ABOUT'),
           _Row(
+            icon: Icons.cloud_outlined,
+            title: 'Catalogue source',
+            subtitle: RemoteCatalog.status,
+          ),
+          _Row(
             icon: Icons.info_outline_rounded,
             title: 'Baytak AR - demo build',
-            subtitle: 'Version 0.6.0 · catalogue, cart and orders are '
-                'stored on this device',
+            subtitle: 'Version 0.7.0 · cart and orders are stored on this '
+                'device',
           ),
         ],
       ),
@@ -355,6 +374,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final viewer = await AppAnalytics.total('viewer');
     final cartN = await AppAnalytics.total('cart');
     final gen = await AppAnalytics.total('generate');
+    final design = await AppAnalytics.total('design');
+    final rooms = await AppAnalytics.total('room_scene');
     final rank = await AppAnalytics.productRanking();
     if (!mounted) return;
     setState(() {
@@ -363,6 +384,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         '3D / AR viewer opened': viewer,
         'Added to cart': cartN,
         'Kitchens generated': gen,
+        'Design-studio edits': design,
+        'Rooms rebuilt in 3D': rooms,
       };
       _ranking = rank;
       _loading = false;

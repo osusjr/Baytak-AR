@@ -4,3 +4,7 @@ runlog*.txt
 *.log
 .DS_Store
 Thumbs.db
+
+# python prototype outputs
+tools/out_design_proto/
+__pycache__/

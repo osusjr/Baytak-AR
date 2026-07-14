@@ -7,6 +7,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 
 import '../data/catalog.dart';
+import 'kitchen_design.dart';
 
 /// ON-DEVICE blueprint->3D pipeline, v2 (plan-driven).
 /// A [LayoutPlan] - produced by AI image analysis or by the manual form -
@@ -95,6 +96,42 @@ class LayoutPlan {
   final List<WindowPlan> windows;
   final String summary;
   final String palette;
+
+  /// Serialize for persistence (Design studio reopens the last plan).
+  /// Round-trips through [fromJson] - values are already clamped.
+  Map<String, dynamic> toJson() => {
+        'width_m': widthM,
+        'depth_m': depthM,
+        'runs': [
+          for (final r in runs)
+            {
+              'wall': r.wall.name,
+              'from_m': r.a,
+              'to_m': r.b,
+              'sink_at_m': r.sinkAt,
+              'range_at_m': r.rangeAt,
+              'fridge': r.fridge,
+              'uppers': r.uppers,
+            }
+        ],
+        'island': island == null
+            ? {'present': false}
+            : {
+                'present': true,
+                'x_m': island!.x0,
+                'z_m': island!.z0,
+                'w_m': island!.w,
+                'd_m': island!.d,
+                'seating': island!.seating.name,
+                'cooktop': island!.cooktop,
+              },
+        'windows': [
+          for (final w in windows)
+            {'wall': w.wall.name, 'center_m': w.center, 'width_m': w.width}
+        ],
+        'palette': palette,
+        'summary': summary,
+      };
 
   /// Defensive parse of AI JSON output: clamps everything, drops invalids.
   static LayoutPlan fromJson(Map<String, dynamic> j) {
@@ -303,6 +340,11 @@ const _mats = <String, List<double>>{
   'splash': [0.71, 0.77, 0.69, 0.0, 0.40],
   'walnut': [0.42, 0.28, 0.185, 0.0, 0.65],
   'walnut_door': [0.48, 0.325, 0.215, 0.0, 0.60],
+  // Upper cabinets carry their own slots (v17) so top and bottom runs can
+  // wear different finishes; defaults match walnut, so old palettes render
+  // identically when a design does not override them.
+  'upper': [0.42, 0.28, 0.185, 0.0, 0.65],
+  'upper_door': [0.48, 0.325, 0.215, 0.0, 0.60],
   'olive': [0.275, 0.325, 0.26, 0.0, 0.55],
   'olive_door': [0.315, 0.37, 0.30, 0.0, 0.50],
   'basalt': [0.15, 0.16, 0.17, 0.05, 0.35],
@@ -319,35 +361,25 @@ const _mats = <String, List<double>>{
   'plant': [0.42, 0.52, 0.34, 0.0, 0.70],
 };
 
-/// Finish palettes: material color overrides the AI (or the user) can pick.
+/// Palette names the AI may answer with; each maps to a Design-studio
+/// preset via [KitchenDesign.fromPalette]. Kept as the validation set for
+/// [LayoutPlan.fromJson].
 const kitchenPalettes = <String, Map<String, List<double>>>{
   'warm_walnut': {},
-  'light_oak': {
-    'walnut': [0.70, 0.57, 0.41],
-    'walnut_door': [0.77, 0.64, 0.47],
-    'olive': [0.52, 0.58, 0.55],
-    'olive_door': [0.58, 0.64, 0.61],
-    'splash': [0.88, 0.90, 0.89],
-    'basalt': [0.82, 0.81, 0.78],
-    'toe': [0.55, 0.50, 0.44],
-  },
-  'dark_modern': {
-    'walnut': [0.16, 0.17, 0.19],
-    'walnut_door': [0.20, 0.21, 0.24],
-    'olive': [0.24, 0.29, 0.28],
-    'olive_door': [0.28, 0.33, 0.32],
-    'splash': [0.30, 0.33, 0.36],
-    'floor': [0.72, 0.70, 0.67],
-  },
+  'light_oak': {},
+  'dark_modern': {},
 };
 
-Map<String, List<double>> _effectiveMats(String palette) {
-  final over = kitchenPalettes[palette] ?? const {};
+/// Applies per-material overrides: [r,g,b] keeps the slot's metal/rough,
+/// [r,g,b,metallic,roughness] replaces them (hardware finishes need this).
+Map<String, List<double>> _effectiveMats(Map<String, List<double>> over) {
   return {
     for (final e in _mats.entries)
-      e.key: over.containsKey(e.key)
-          ? [...over[e.key]!, e.value[3], e.value[4]]
-          : e.value,
+      e.key: !over.containsKey(e.key)
+          ? e.value
+          : over[e.key]!.length >= 5
+              ? over[e.key]!
+              : [...over[e.key]!, e.value[3], e.value[4]],
   };
 }
 
@@ -359,6 +391,8 @@ const _matTexture = <String, String>{
   'splash': 'tile',
   'walnut': 'wood',
   'walnut_door': 'wood',
+  'upper': 'wood',
+  'upper_door': 'wood',
   'olive': 'wood',
   'olive_door': 'wood',
   'wood': 'wood',
@@ -375,6 +409,8 @@ const _matTile = <String, double>{
   'splash': 0.60,
   'walnut': 0.85,
   'walnut_door': 0.85,
+  'upper': 0.85,
+  'upper_door': 0.85,
   'olive': 0.80,
   'olive_door': 0.80,
   'wood': 0.70,
@@ -492,17 +528,59 @@ class _Frame {
   }
 }
 
-void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows) {
+/// Handle on a base door/drawer front (front face at v = _bd + 0.017).
+/// Coordinates frozen from tools/design_studio_proto.py.
+void _baseHandle(_Scene s, _Frame f, double c, String style) {
+  if (style == 'bar') {
+    f.box(s, c - 0.07, c + 0.07, _bh - 0.105, _bh - 0.094, _bd + 0.021,
+        _bd + 0.048, 'brass');
+  } else if (style == 'knob') {
+    f.box(s, c - 0.016, c + 0.016, _bh - 0.118, _bh - 0.086, _bd + 0.017,
+        _bd + 0.049, 'brass');
+  } // 'none': handleless - no geometry
+}
+
+/// Handle on an upper door (front face at v = _ud + 0.015).
+void _upperHandle(_Scene s, _Frame f, double c, String style) {
+  if (style == 'bar') {
+    f.box(s, c - 0.07, c + 0.07, _uy0 + 0.054, _uy0 + 0.065, _ud + 0.019,
+        _ud + 0.046, 'brass');
+  } else if (style == 'knob') {
+    f.box(s, c - 0.016, c + 0.016, _uy0 + 0.042, _uy0 + 0.074, _ud + 0.015,
+        _ud + 0.047, 'brass');
+  }
+}
+
+/// A door leaf from vBack to vFace. 'shaker' = recessed panel + 4 rails;
+/// falls back to slab when the leaf is too small for a 6.5 cm frame.
+void _doorFront(_Scene s, _Frame f, double u0, double u1, double y0,
+    double y1, double vBack, double vFace, String mat, String style) {
+  const r = 0.065;
+  if (style == 'shaker' && (u1 - u0) > 2.6 * r && (y1 - y0) > 2.6 * r) {
+    final vMid = vBack + (vFace - vBack) * 0.55;
+    f.box(s, u0, u1, y0, y1, vBack, vMid, mat); // recessed panel
+    f.box(s, u0, u0 + r, y0, y1, vMid, vFace, mat); // left rail
+    f.box(s, u1 - r, u1, y0, y1, vMid, vFace, mat); // right rail
+    f.box(s, u0 + r, u1 - r, y0, y0 + r, vMid, vFace, mat); // bottom rail
+    f.box(s, u0 + r, u1 - r, y1 - r, y1, vMid, vFace, mat); // top rail
+  } else {
+    f.box(s, u0, u1, y0, y1, vBack, vFace, mat);
+  }
+}
+
+void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
+    KitchenDesign design) {
   var a = r.a, b = r.b;
+  final handle = design.handle, door = design.door;
 
   // fridge consumes 0.8 m at one end
   if (r.fridge == 'start') {
     f.box(s, a, a + 0.70, 0, 1.86, 0.0, 0.75, 'steel');
-    f.box(s, a, a + 0.70, 1.92, 2.20, 0.02, 0.72, 'walnut');
+    f.box(s, a, a + 0.70, 1.92, 2.20, 0.02, 0.72, 'upper');
     a += 0.80;
   } else if (r.fridge == 'end') {
     f.box(s, b - 0.70, b, 0, 1.86, 0.0, 0.75, 'steel');
-    f.box(s, b - 0.70, b, 1.92, 2.20, 0.02, 0.72, 'walnut');
+    f.box(s, b - 0.70, b, 1.92, 2.20, 0.02, 0.72, 'upper');
     b -= 0.80;
   }
   if (b - a < 0.7) return;
@@ -520,10 +598,9 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows) {
     final ba = a + k * bw + 0.009, bb = a + (k + 1) * bw - 0.009;
     final c = (ba + bb) / 2;
     if (r.rangeAt != null && (c - r.rangeAt!).abs() < 0.42) continue;
-    f.box(s, ba, bb, _th + 0.008, _bh - 0.008, _bd, _bd + 0.017,
-        'walnut_door');
-    f.box(s, c - 0.07, c + 0.07, _bh - 0.105, _bh - 0.094, _bd + 0.021,
-        _bd + 0.048, 'brass');
+    _doorFront(s, f, ba, bb, _th + 0.008, _bh - 0.008, _bd, _bd + 0.017,
+        'walnut_door', door);
+    _baseHandle(s, f, c, handle);
   }
 
   // sink + faucet
@@ -588,15 +665,14 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows) {
       spans = next;
     }
     for (final sp in spans) {
-      f.box(s, sp[0], sp[1], _uy0, _uy1, 0.0, _ud, 'walnut');
+      f.box(s, sp[0], sp[1], _uy0, _uy1, 0.0, _ud, 'upper');
       final nd = math.max(1, ((sp[1] - sp[0]) / 0.55).round());
       final dw = (sp[1] - sp[0]) / nd;
       for (var k = 0; k < nd; k++) {
         final ba = sp[0] + k * dw + 0.008, bb = sp[0] + (k + 1) * dw - 0.008;
-        f.box(s, ba, bb, _uy0 + 0.008, _uy1 - 0.008, _ud, _ud + 0.015,
-            'walnut_door');
-        f.box(s, (ba + bb) / 2 - 0.07, (ba + bb) / 2 + 0.07, _uy0 + 0.054,
-            _uy0 + 0.065, _ud + 0.019, _ud + 0.046, 'brass');
+        _doorFront(s, f, ba, bb, _uy0 + 0.008, _uy1 - 0.008, _ud,
+            _ud + 0.015, 'upper_door', door);
+        _upperHandle(s, f, (ba + bb) / 2, handle);
       }
     }
   }
@@ -670,7 +746,7 @@ void _buildIsland(_Scene s, IslandPlan i, double w, double d) {
   }
 }
 
-_Scene _buildPlan(LayoutPlan p) {
+_Scene _buildPlan(LayoutPlan p, KitchenDesign design) {
   final s = _Scene();
   final w = p.widthM, d = p.depthM;
   s.box(0, -0.05, 0, w, 0.0, d, 'floor');
@@ -685,7 +761,7 @@ _Scene _buildPlan(LayoutPlan p) {
   if (wallsUsed.contains(Wall.east)) s.box(w, 0, 0, w + _wallT, _hCeil, d, 'wall');
 
   for (final r in p.runs) {
-    _buildRun(s, _Frame(r.wall, w, d), r, p.windows);
+    _buildRun(s, _Frame(r.wall, w, d), r, p.windows, design);
   }
   final isl = p.island;
   if (isl != null) _buildIsland(s, isl, w, d);
@@ -696,7 +772,8 @@ _Scene _buildPlan(LayoutPlan p) {
 // binary glTF writer
 // ---------------------------------------------------------------------------
 Uint8List _writeGlb(_Scene scene, String name, Map<String, List<double>> mats,
-    {Map<String, Uint8List> textures = const {}}) {
+    {Map<String, Uint8List> textures = const {},
+    Map<String, String> matTexture = _matTexture}) {
   final bin = BytesBuilder();
   final bufferViews = <Map<String, dynamic>>[];
   final accessors = <Map<String, dynamic>>[];
@@ -762,7 +839,7 @@ Uint8List _writeGlb(_Scene scene, String name, Map<String, List<double>> mats,
     });
     final iAcc = accessors.length - 1;
 
-    final texName = _matTexture[mat];
+    final texName = matTexture[mat];
     int? tAcc;
     if (texName != null && textures.containsKey(texName)) {
       final uv = Float32List.fromList(g.uv);
@@ -801,8 +878,8 @@ Uint8List _writeGlb(_Scene scene, String name, Map<String, List<double>> mats,
         'name': e.key,
         'pbrMetallicRoughness': {
           'baseColorFactor': [e.value[0], e.value[1], e.value[2], 1.0],
-          if (texIndex.containsKey(_matTexture[e.key]))
-            'baseColorTexture': {'index': texIndex[_matTexture[e.key]]!},
+          if (texIndex.containsKey(matTexture[e.key]))
+            'baseColorTexture': {'index': texIndex[matTexture[e.key]]!},
           'metallicFactor': e.value[3],
           'roughnessFactor': e.value[4],
         },
@@ -873,8 +950,9 @@ Uint8List _writeGlb(_Scene scene, String name, Map<String, List<double>> mats,
 
 // ---------------------------------------------------------------------------
 Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
-    {String source = 'your measurements'}) async {
-  final scene = _buildPlan(plan);
+    {String source = 'your measurements', KitchenDesign? design}) async {
+  final d = design ?? KitchenDesign.fromPalette(plan.palette);
+  final scene = _buildPlan(plan, d);
   Map<String, Uint8List> tex;
   try {
     tex = await _loadTextures();
@@ -882,7 +960,9 @@ Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
     tex = const {}; // missing assets -> flat colors, never a crash
   }
   final bytes = _writeGlb(scene, 'Kitchen_Custom',
-      _effectiveMats(plan.palette), textures: tex);
+      _effectiveMats(d.materialOverrides()),
+      textures: tex,
+      matTexture: {..._matTexture, ...d.textureOverrides()});
 
   final dir = await getApplicationDocumentsDirectory();
   final file = File('${dir.path}/generated/kitchen_custom.glb');
@@ -890,8 +970,11 @@ Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
   await file.writeAsBytes(bytes, flush: true);
 
   final lm = plan.runs.fold<double>(0, (a, r) => a + r.length);
-  final price =
-      ((lm * 920 + (plan.island != null ? 650 : 0)) / 10).round() * 10;
+  final price = ((lm * 920 + (plan.island != null ? 650 : 0)) *
+              d.priceFactor /
+              10)
+          .round() *
+      10;
   final orbitR =
       (math.max(plan.widthM, plan.depthM) * 2.1).toStringAsFixed(1);
   final runsDesc = plan.runs
@@ -913,29 +996,26 @@ Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
         '${plan.widthM.toStringAsFixed(2)} × '
         '${plan.depthM.toStringAsFixed(2)} m. Runs: $runsDesc'
         '${plan.island != null ? '. Island ${plan.island!.w.toStringAsFixed(1)} × ${plan.island!.d.toStringAsFixed(1)} m${plan.island!.cooktop ? ' with cooktop' : ''}' : ''}. '
-        'Walnut cabinetry, basalt worktops, brass hardware. Price is an '
-        'automatic estimate from run length.',
+        'Finish: ${d.describe()}. Price is an automatic estimate from run '
+        'length and finish.',
     wCm: (plan.widthM * 100).round(),
     dCm: (plan.depthM * 100).round(),
     hCm: 270,
-    materials: const [
-      'Walnut cabinetry',
-      'Basalt worktops',
-      'Brass hardware',
-      'Sage backsplash',
-    ],
-    finishes: const [0xFF6B4830, 0xFF465342, 0xFF26292B, 0xFFC79E54],
+    materials: d.materialsLine(),
+    finishes: d.finishSwatches(),
     variants: [plan.summary.isEmpty ? 'Custom' : plan.summary],
     priceJd: price,
     cameraOrbit: '-38deg 72deg ${orbitR}m',
   );
+  registerGeneratedModel(model);
 
   return GeneratedKitchen(
       model: model, path: file.path, triangles: scene.triangles);
 }
 
-Future<GeneratedKitchen> generateKitchen(KitchenSpec spec) =>
-    generateFromPlan(spec.toPlan());
+Future<GeneratedKitchen> generateKitchen(KitchenSpec spec,
+        {KitchenDesign? design}) =>
+    generateFromPlan(spec.toPlan(), design: design);
 
 // ---------------------------------------------------------------------------
 // ROOM SCENES: AI-arranged furniture from the catalogue, built as one model
@@ -1144,7 +1224,7 @@ Future<GeneratedKitchen> generateRoomScene(RoomScenePlan plan,
   } catch (_) {
     tex = const {};
   }
-  final bytes = _writeGlb(s, 'Room_Redesign', _effectiveMats('warm_walnut'),
+  final bytes = _writeGlb(s, 'Room_Redesign', _effectiveMats(const {}),
       textures: tex);
   final dir = await getApplicationDocumentsDirectory();
   final file = File('${dir.path}/generated/room_scene.glb');
@@ -1173,6 +1253,7 @@ Future<GeneratedKitchen> generateRoomScene(RoomScenePlan plan,
     priceJd: total,
     cameraOrbit: '-38deg 70deg ${orbitR}m',
   );
+  registerGeneratedModel(model);
   return GeneratedKitchen(
       model: model, path: file.path, triangles: s.triangles);
 }

@@ -14,17 +14,66 @@ generated from a blueprint — not one cabinet at a time.**
 ```
 baytak_ar/
 ├── flutter_app/          The Flutter application (iOS + Android)
-│   ├── lib/              All Dart source (v2: store-catalogue UI)
+│   ├── lib/              All Dart source (v17: store UI + Design studio)
 │   ├── android/…/AndroidManifest.xml + network_security_config.xml
 │   └── assets/           5 generated .glb models, catalogue thumbnails,
-│                         demo_blueprint.png
+│                         demo_blueprint.png, tintable textures
 ├── tools/
-│   └── generate_assets.py   The real blueprint→3D pipeline (layout → GLB)
+│   ├── generate_assets.py       The blueprint→3D pipeline (layout → GLB)
+│   ├── design_studio_proto.py   Python mirror of the on-device generator +
+│   │                            the v17 element/design system (validated
+│   │                            here first, then ported to Dart)
+│   └── upload_catalog.py        Push the catalogue to a Supabase project
+├── supabase/
+│   ├── schema.sql        Cloud catalogue tables + storage buckets + RLS
+│   └── README.md         10-minute setup for the cloud catalogue
 ├── preview/
 │   └── kitchen_preview.html Open in any browser: the generated kitchen,
 │                            interactive, standing on its own blueprint
 └── docs/                 Isometric verification renders
 ```
+
+## New in v17
+
+**Design studio (IKEA-planner-style).** Every generated kitchen is broken
+into elements the customer restyles live: wall paint, floor, worktops,
+backsplash, upper and lower cabinets *separately*, island finish, hardware
+(brass/steel/black), handle style (bar/knob/handleless) and door front
+(slab/shaker). A 2D plan + elevation preview repaints instantly on every
+tap; "Build in 3D & AR" re-extrudes the GLB on the phone in milliseconds.
+Quick looks include **All light** and **All dark** presets. Reachable from
+the Blueprint studio (every generate path lands there) and from
+Profile → Baytak studio.
+
+**Zero-setup AI on free NVIDIA models.** The provider/API-key pickers are
+gone. Blueprint reading and room analysis run against free NVIDIA-hosted
+vision models (`meta/llama-4-maverick-17b-128e-instruct` first, with a
+fallback chain) - the key ships with the build (`--dart-define`) or via the
+Supabase `demo_config` table, and images are auto-compressed on-device to
+NVIDIA's inline limit. Users never see a key field.
+
+**Cloud catalogue (Supabase).** Products and hosted GLBs can live in a free
+Supabase project instead of the APK - the store updates products server
+side, the app syncs on launch, caches models locally, and falls back to the
+bundled catalogue offline. See `supabase/README.md`.
+
+## Configuration (build-time, all optional)
+
+```bash
+flutter run \
+  --dart-define=NVIDIA_API_KEY=nvapi-...            # free @ build.nvidia.com
+  --dart-define=SUPABASE_URL=https://xxx.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=eyJ...            # cloud catalogue
+```
+
+With no defines the app runs fully offline: bundled catalogue, manual
+measurements in the Blueprint studio, full Design studio and 3D/AR builds.
+Only the two AI analysis buttons need the NVIDIA key.
+
+**Going to production:** consumer builds must not embed provider keys.
+The seam is `visionCall()` in `lib/services/ai_client.dart` - point it at a
+Supabase Edge Function (or any small backend) that holds the key
+server-side. `supabase/README.md` spells out the model.
 
 ## See it in 60 seconds (no Flutter needed)
 
