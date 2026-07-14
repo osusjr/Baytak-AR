@@ -307,6 +307,7 @@ Future<String> _chatCall(
   http.Response? ok;
   _Candidate? okBy;
   http.Response? lastResp;
+  _Candidate? lastCand;
   Object? lastError;
   final clock = Stopwatch()..start();
   for (final c in candidates) {
@@ -326,6 +327,8 @@ Future<String> _chatCall(
     });
     http.Response attempt;
     try {
+      // GPT-5.6 reasons before answering: a hard drawing can exceed the
+      // free-tier 60 s budget, so the paid candidate gets extra time
       attempt = await http.post(
         Uri.parse(c.endpoint),
         headers: {
@@ -334,8 +337,9 @@ Future<String> _chatCall(
           'authorization': 'Bearer ${c.key}',
         },
         body: body,
-      ).timeout(const Duration(seconds: 60));
+      ).timeout(Duration(seconds: openai ? 100 : 60));
     } on Exception catch (e) {
+      lastCand = c;
       lastError = e;
       continue;
     }
@@ -345,6 +349,7 @@ Future<String> _chatCall(
       break;
     }
     lastResp = attempt;
+    lastCand = c;
     final excerpt = attempt.body.length > 200
         ? attempt.body.substring(0, 200)
         : attempt.body;
@@ -352,21 +357,32 @@ Future<String> _chatCall(
   }
 
   if (ok == null) {
+    // name the provider that ACTUALLY failed - a misleading "regenerate
+    // your NVIDIA key" after an OpenAI failure cost a debugging session
     final status = lastResp?.statusCode;
+    final who = lastCand == null
+        ? 'the AI provider'
+        : _friendlyModel(lastCand.model, lastCand.endpoint);
+    final console = lastCand?.endpoint == _openaiEndpoint
+        ? 'platform.openai.com'
+        : lastCand?.endpoint == _geminiEndpoint
+            ? 'aistudio.google.com'
+            : 'build.nvidia.com';
     if (status == 401 || status == 403) {
       throw AiClientException(
-          'The AI provider rejected the demo key ($status). Regenerate a '
-          'free key (build.nvidia.com / aistudio.google.com) and update '
-          'the build or the Supabase demo_config row.');
+          '$who rejected its key ($status). Check the key at $console and '
+          'update the build (--dart-define) or the Supabase demo_config '
+          'row.');
     }
     if (status == 429) {
       throw AiClientException(
-          'Free-tier rate limit reached. Wait a minute and try again.');
+          '$who hit its rate limit. Wait a minute and try again.');
     }
     throw AiClientException(
-        'None of the free AI models answered - they may be busy, or '
-        'the internet connection is down. Try again in a moment.\n\n'
-        'Last error: $lastError');
+        'No configured AI model answered (tried '
+        '${candidates.map((c) => c.model).join(', ')}). They may be busy, '
+        'or the internet connection is down. Try again in a moment.\n\n'
+        'Last error from $who: $lastError');
   }
   final resp = ok;
 

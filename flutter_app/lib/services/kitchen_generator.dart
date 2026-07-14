@@ -995,6 +995,25 @@ Uint8List _writeGlb(_Scene scene, String name, Map<String, List<double>> mats,
 }
 
 // ---------------------------------------------------------------------------
+/// Keep only the newest [keep] generated GLBs - unique per-build names
+/// (the WebView cache fix) must not grow the documents dir forever.
+/// Models referencing a pruned file fall back via byId()'s placeholder.
+Future<void> _pruneGenerated(Directory dir, {required int keep}) async {
+  try {
+    final files = dir
+        .listSync()
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.glb'))
+        .toList()
+      ..sort((a, b) => b.path.compareTo(a.path)); // stamp in name = newest first
+    for (final f in files.skip(keep)) {
+      await f.delete();
+    }
+  } catch (_) {
+    // pruning is best-effort - never fail a build over cleanup
+  }
+}
+
 Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
     {String source = 'your measurements', KitchenDesign? design}) async {
   final d = design ?? KitchenDesign.fromPalette(plan.palette);
@@ -1011,9 +1030,15 @@ Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
       matTexture: {..._matTexture, ...d.textureOverrides()});
 
   final dir = await getApplicationDocumentsDirectory();
-  final file = File('${dir.path}/generated/kitchen_custom.glb');
+  // UNIQUE filename per build: the 3D viewer is a WebView, and WebViews
+  // cache file:// resources by URI - reusing one name ("kitchen_custom
+  // .glb") made every new kitchen render as the previous, cached model
+  // ("the same 3D model for every blueprint"). Old builds are pruned.
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final file = File('${dir.path}/generated/kitchen_$stamp.glb');
   await file.parent.create(recursive: true);
   await file.writeAsBytes(bytes, flush: true);
+  await _pruneGenerated(file.parent, keep: 8);
 
   final lm = plan.runs.fold<double>(0, (a, r) => a + r.length);
   final price = ((lm * 920 + (plan.island != null ? 650 : 0)) *
@@ -1032,7 +1057,7 @@ Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
       .join(', ');
 
   final model = DemoModel(
-    id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
+    id: 'custom_$stamp',
     title: 'Your Kitchen',
     category: Cat.kitchens,
     asset: 'file://${file.path}',
@@ -1273,13 +1298,16 @@ Future<GeneratedKitchen> generateRoomScene(RoomScenePlan plan,
   final bytes = _writeGlb(s, 'Room_Redesign', _effectiveMats(const {}),
       textures: tex);
   final dir = await getApplicationDocumentsDirectory();
-  final file = File('${dir.path}/generated/room_scene.glb');
+  // unique name per build - same WebView file:// cache trap as kitchens
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final file = File('${dir.path}/generated/room_$stamp.glb');
   await file.parent.create(recursive: true);
   await file.writeAsBytes(bytes, flush: true);
+  await _pruneGenerated(file.parent, keep: 8);
 
   final orbitR = (math.max(w, d) * 2.1).toStringAsFixed(1);
   final model = DemoModel(
-    id: 'room_${DateTime.now().millisecondsSinceEpoch}',
+    id: 'room_$stamp',
     title: 'Your ${plan.roomType} - redesigned',
     category: Cat.living,
     asset: 'file://${file.path}',
