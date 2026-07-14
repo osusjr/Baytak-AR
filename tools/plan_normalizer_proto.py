@@ -123,6 +123,11 @@ def normalize_plan(plan):
     # ---- 1. clamp, drop degenerates, merge same-wall overlaps ------------
     runs = []
     for r in plan["runs"]:
+        if r.get("auto") and r.get("sinkAt") is None and \
+                r.get("rangeAt") is None and not r.get("fridge"):
+            # editor-created run whose appliance moved away
+            notes.append("removed auto run left behind by a moved appliance")
+            continue
         m = axis_max(r["wall"], w, d)
         r["a"] = min(max(r["a"], 0.02), m - 0.02)
         r["b"] = min(max(r["b"], 0.02), m - 0.02)
@@ -148,6 +153,8 @@ def normalize_plan(plan):
             if not prev.get("fridge") and r.get("fridge"):
                 prev["fridge"] = r["fridge"]
             prev["uppers"] = prev.get("uppers", False) or r.get("uppers", False)
+            # a merge containing ANY original cabinets is not disposable
+            prev["auto"] = prev.get("auto", False) and r.get("auto", False)
             notes.append(f"merged overlapping runs on {r['wall']}")
         else:
             merged.append(r)

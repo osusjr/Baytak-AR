@@ -58,6 +58,14 @@ const _nvidiaEndpoint =
 const _geminiEndpoint =
     'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 
+/// Optional PAID provider: OpenAI pay-as-you-go (no subscription). When an
+/// OPENAI_API_KEY is configured, GPT-5.6 (both vision and reasoning in one
+/// model) goes FIRST in both chains; free models remain as fallback so a
+/// spent credit balance can never kill a demo. GPT-5.x quirks handled in
+/// _chatCall: max_completion_tokens instead of max_tokens, and no
+/// temperature override (reasoning models reject non-default values).
+const _openaiEndpoint = 'https://api.openai.com/v1/chat/completions';
+
 class _Candidate {
   const _Candidate(this.endpoint, this.key, this.model);
   final String endpoint, key, model;
@@ -88,12 +96,18 @@ Future<String> _resolveKey(String define, String prefsKey) async {
 }
 
 Future<List<_Candidate>> _candidates({bool text = false}) async {
+  final openai =
+      await _resolveKey(DemoConfig.openaiApiKey, 'cfg_openai_key');
   final nvidia =
       await _resolveKey(DemoConfig.nvidiaApiKey, 'cfg_nvidia_key');
   final gemini =
       await _resolveKey(DemoConfig.geminiApiKey, 'cfg_gemini_key');
   final nvidiaModels = text ? aiTextModels : aiVisionModels;
   return [
+    // paid quality first when configured (GPT-5.6 is multimodal - the
+    // same model serves the vision AND the reasoning chain)
+    if (openai.isNotEmpty)
+      _Candidate(_openaiEndpoint, openai, DemoConfig.openaiModel),
     if (nvidia.isNotEmpty)
       for (final m in nvidiaModels) _Candidate(_nvidiaEndpoint, nvidia, m),
     // Gemini Flash handles both modalities - same chain either way
@@ -106,11 +120,11 @@ Future<List<_Candidate>> _candidates({bool text = false}) async {
 Future<bool> aiConfigured() async => (await _candidates()).isNotEmpty;
 
 const aiNotConfiguredMessage =
-    'AI analysis is not configured on this build. Add a free key '
-    '(build.nvidia.com or aistudio.google.com) at build time '
-    '(--dart-define=NVIDIA_API_KEY=... / GEMINI_API_KEY=...) or in the '
-    'Supabase demo_config table - see the README. Manual measurements '
-    'below work offline.';
+    'AI analysis is not configured on this build. Add a key at build time '
+    '(--dart-define=OPENAI_API_KEY=... for paid GPT-5.6, or a free '
+    'NVIDIA_API_KEY=... / GEMINI_API_KEY=...) or in the Supabase '
+    'demo_config table - see the README. Manual measurements below work '
+    'offline.';
 
 // ---------------------------------------------------------------------------
 // image preparation: decode -> downscale -> JPEG until under budget.
@@ -270,14 +284,17 @@ Future<String> _chatCall(
   final clock = Stopwatch()..start();
   for (final c in candidates) {
     if (clock.elapsed > const Duration(seconds: 150)) break;
+    final openai = c.endpoint == _openaiEndpoint;
+    // reasoning models think before answering - give them headroom
+    final budget =
+        c.model.startsWith('qwen/') || c.model.startsWith('deepseek')
+            ? 8192
+            : maxTokens;
     final body = jsonEncode({
       'model': c.model,
-      // reasoning models think before answering - give them headroom
-      'max_tokens':
-          c.model.startsWith('qwen/') || c.model.startsWith('deepseek')
-              ? 8192
-              : maxTokens,
-      'temperature': 0.2,
+      // GPT-5.x rejects max_tokens and non-default temperature
+      if (openai) 'max_completion_tokens': 16384 else 'max_tokens': budget,
+      if (!openai) 'temperature': 0.2,
       'messages': messagesFor(c.model),
     });
     http.Response attempt;

@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 20).
+(internal build counter in lib/theme.dart, currently 21).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -29,8 +29,8 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   models across restarts). Screens listing products subscribe via
   AppScope.of(context) so the swap repaints them.
 - Config: lib/config/demo_config.dart - all keys are --dart-define
-  (NVIDIA_API_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY).
-  No key UI in-app.
+  (OPENAI_API_KEY + OPENAI_MODEL, NVIDIA_API_KEY, GEMINI_API_KEY,
+  SUPABASE_URL, SUPABASE_ANON_KEY). No key UI in-app.
 - State: lib/state/app_state.dart - cart/favorites/orders/name persisted
   via shared_preferences, exposed by AppScope (InheritedNotifier).
 - 3D/AR: model_viewer_plus -> Google Scene Viewer. ONE WebView in the
@@ -72,10 +72,14 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   GLBs and TINTED by each material's baseColorFactor; designs can also
   remap which texture a slot uses (e.g. butcher-block worktop -> wood).
   Swap PNGs = new look, no code.
-- AI: lib/services/ai_client.dart - FREE hosted models, tried as candidate
-  chains: NVIDIA (integrate.api.nvidia.com, OpenAI-style chat/completions,
-  Bearer nvapi-key), then Gemini via Google's OpenAI-compatible endpoint
-  when GEMINI_API_KEY is set. visionCall() uses aiVisionModels
+- AI: lib/services/ai_client.dart - hosted models, tried as candidate
+  chains: OpenAI GPT-5.6 FIRST when OPENAI_API_KEY is set (api.openai.com,
+  paid pay-as-you-go; multimodal so ONE model serves both chains;
+  GPT-5.x quirks: max_completion_tokens not max_tokens, no temperature
+  override), then NVIDIA (integrate.api.nvidia.com, OpenAI-style
+  chat/completions, Bearer nvapi-key), then Gemini via Google's
+  OpenAI-compatible endpoint when GEMINI_API_KEY is set. visionCall()
+  uses aiVisionModels
   (qwen3.5-397b > nemotron-nano-12b-vl > llama-3.2-90b), textCall() uses
   aiTextModels (mistral-large-3-675b > deepseek-v4-pro >
   nemotron-3-super-120b); BOTH orders are BENCHMARK-RANKED (tools/bench/,
@@ -88,8 +92,8 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   to message.reasoning_content. Images auto-downscaled/JPEG-recompressed
   on-device to <=130 KB raw (NVIDIA ~180 KB inline data-URI limit, base64
   +33%) in an isolate via compute(). Key resolution: dart-define, else
-  Supabase demo_config cached to prefs ('cfg_nvidia_key'/
-  'cfg_gemini_key'). No provider/key UI; aiConfigured() gates the AI
+  Supabase demo_config cached to prefs ('cfg_nvidia_key'/'cfg_gemini_key'/
+  'cfg_openai_key'). No provider/key UI; aiConfigured() gates the AI
   buttons. extractJsonObject() strips <think> blocks/fences and isolates
   the first balanced JSON object. blueprint_ai.dart is TWO-STAGE: vision
   describes the drawing (surveyor prompt, no schema) -> text model builds
@@ -105,7 +109,10 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   (within 0.6 m of an end), or split (mid-run fridge = 0.8 m gap between
   two touching runs); fridge on bare wall = fridge-only run; corner
   conflicts resolved by normalizePlan (constants: edgeMargin 0.45,
-  minSeparation 0.95, fridgeSpan 0.8, endSnap 0.55). UI in
+  minSeparation 0.95, fridgeSpan 0.8, endSnap 0.55). Editor-created runs
+  carry RunPlan.auto (persisted in JSON): when their appliance moves away
+  the normalizer deletes them - auto cabinets never outlive their reason
+  to exist (b21 fix for "ghost cabinets ruin the design"). UI in
   design_studio_screen.dart: PlanTransform maps plan metres <-> canvas px
   (b20 unified convention), wallCoord() targets ANY wall, chips live-move
   while over existing cabinets and turn into a ghost + landing label over

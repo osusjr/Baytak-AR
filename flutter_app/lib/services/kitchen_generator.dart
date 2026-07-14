@@ -44,6 +44,7 @@ class RunPlan {
     this.rangeAt,
     this.fridge, // 'start' | 'end' | null
     this.uppers = false,
+    this.auto = false,
   });
 
   final Wall wall;
@@ -53,7 +54,14 @@ class RunPlan {
   String? fridge;
   bool uppers;
 
+  /// True for runs the drag editor created to host a dropped appliance.
+  /// When the appliance moves away again the normalizer removes the run -
+  /// auto cabinets must never outlive their reason to exist.
+  bool auto;
+
   double get length => b - a;
+
+  bool get hasAppliance => sinkAt != null || rangeAt != null || fridge != null;
 }
 
 class WindowPlan {
@@ -115,6 +123,7 @@ class LayoutPlan {
               'range_at_m': r.rangeAt,
               'fridge': r.fridge,
               'uppers': r.uppers,
+              if (r.auto) 'auto': true,
             }
         ],
         'island': island == null
@@ -183,6 +192,7 @@ class LayoutPlan {
         rangeAt: r['range_at_m'] == null ? null : within(r['range_at_m']),
         fridge: hasFridge ? fr : null,
         uppers: r['uppers'] == true,
+        auto: r['auto'] == true,
       ));
     }
 

@@ -104,6 +104,8 @@ bundled catalogue offline. See `supabase/README.md`.
 
 ```bash
 flutter run \
+  --dart-define=OPENAI_API_KEY=sk-...               # paid quality mode (GPT-5.6)
+  --dart-define=OPENAI_MODEL=gpt-5.6-sol            # or -terra / -luna (cheaper)
   --dart-define=NVIDIA_API_KEY=nvapi-...            # free @ build.nvidia.com
   --dart-define=GEMINI_API_KEY=AIza...              # optional 2nd free provider
   --dart-define=SUPABASE_URL=https://xxx.supabase.co \
@@ -112,7 +114,35 @@ flutter run \
 
 With no defines the app runs fully offline: bundled catalogue, manual
 measurements in the Blueprint studio, full Design studio and 3D/AR builds.
-Only the two AI analysis buttons need a key (either provider works alone).
+Only the two AI analysis buttons need a key (any provider works alone).
+
+### Paid quality mode (GPT-5.6, pay-as-you-go - NOT a subscription)
+
+When `OPENAI_API_KEY` is set, GPT-5.6 answers first and the free models
+become the fallback chain (a spent credit balance can never kill a demo).
+Setup takes ~5 minutes:
+
+1. Create an account at platform.openai.com (this is the developer
+   platform - separate from ChatGPT Plus; no subscription involved).
+2. Settings -> Billing -> add credits (minimum $5; it is prepaid, so it
+   can never bill more than you loaded). Set a monthly budget limit on
+   the same page.
+3. Create a key at platform.openai.com/api-keys and build with
+   `--dart-define=OPENAI_API_KEY=sk-...` (or put it in the Supabase
+   demo_config table as `openai_api_key` to key demo phones without
+   rebuilding).
+
+Cost per blueprint analysis (two-stage, ~4-5K tokens in / ~2-3K out):
+
+| OPENAI_MODEL | $/analysis (approx) | $5 buys | Notes |
+|---|---|---|---|
+| `gpt-5.6-sol` (default) | $0.08-0.12 | ~50 analyses | flagship - most powerful |
+| `gpt-5.6-terra` | $0.04-0.06 | ~100 | mid tier |
+| `gpt-5.6-luna` | $0.015-0.025 | ~250 | budget tier, still GPT-5.6 family |
+
+(The "$0.006/analysis" figure floating around is the older, smaller
+`gpt-5.4-mini` - also fine, set it via OPENAI_MODEL if cost matters more
+than headroom.)
 
 **Which AI models?** Measured on this repo's benchmark (`tools/bench/`,
 four ground-truth blueprints incl. a hard U-shape+bar case, July 2026;

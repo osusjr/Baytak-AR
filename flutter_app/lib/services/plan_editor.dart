@@ -110,7 +110,8 @@ class PlanEditor {
             sinkAt: r.sinkAt,
             rangeAt: r.rangeAt,
             fridge: r.fridge,
-            uppers: r.uppers)
+            uppers: r.uppers,
+            auto: r.auto)
     ];
     final isl = plan.island;
     final savedIsland = isl == null
@@ -163,7 +164,8 @@ class PlanEditor {
       }
     }
     if (target == null) {
-      // bare wall: create a run under the appliance
+      // bare wall: create a run under the appliance (marked auto so it
+      // removes itself when the appliance moves away again)
       if (m < newRunLen + 0.04) return false;
       var a = u - newRunLen / 2, b = u + newRunLen / 2;
       if (a < 0.02) {
@@ -174,7 +176,7 @@ class PlanEditor {
         a -= b - (m - 0.02);
         b = m - 0.02;
       }
-      target = RunPlan(wall: wall, a: a, b: b, uppers: true);
+      target = RunPlan(wall: wall, a: a, b: b, uppers: true, auto: true);
       plan.runs.add(target);
     }
     return moveAppliance(kind, target, u);
@@ -226,6 +228,7 @@ class PlanEditor {
             a: u + fridgeSpan / 2,
             b: oldB,
             uppers: target.uppers,
+            auto: target.auto,
           );
           target.b = u + fridgeSpan / 2;
           target.fridge = 'end';
@@ -283,8 +286,8 @@ class PlanEditor {
         }
       }
     }
-    plan.runs
-        .add(RunPlan(wall: wall, a: a, b: b, fridge: 'start', uppers: false));
+    plan.runs.add(RunPlan(
+        wall: wall, a: a, b: b, fridge: 'start', uppers: false, auto: true));
     return true;
   }
 

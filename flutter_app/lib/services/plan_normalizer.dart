@@ -116,6 +116,12 @@ List<String> normalizePlan(LayoutPlan plan) {
   // ---- 1. clamp, drop degenerates, merge same-wall overlaps -------------
   final kept = <RunPlan>[];
   for (final r in plan.runs) {
+    if (r.auto && !r.hasAppliance) {
+      // an editor-created run whose appliance moved away: remove it so
+      // ghost cabinets never pile up around the kitchen
+      notes.add('removed the cabinets added for a moved appliance');
+      continue;
+    }
     final m = _axisMax(r.wall, w, d);
     r.a = r.a.clamp(0.02, m - 0.02).toDouble();
     r.b = r.b.clamp(0.02, m - 0.02).toDouble();
@@ -147,6 +153,8 @@ List<String> normalizePlan(LayoutPlan plan) {
       prev.rangeAt ??= r.rangeAt;
       prev.fridge ??= r.fridge;
       prev.uppers = prev.uppers || r.uppers;
+      // a merge containing ANY original cabinets is no longer disposable
+      prev.auto = prev.auto && r.auto;
       notes.add('merged overlapping cabinets on the ${r.wall.name} wall');
     } else {
       merged.add(r);

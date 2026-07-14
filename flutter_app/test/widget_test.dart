@@ -291,6 +291,26 @@ void main() {
       expect(west.every((r) => r.fridge == null), isTrue);
     });
 
+    test('auto-created cabinets vanish when the appliance moves back', () {
+      final plan = lShape();
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      final homeU = north.sinkAt!;
+      // out to a bare wall: a run is created under the sink...
+      ed.place(ApplianceKind.sink, Wall.east, 1.7);
+      expect(plan.runs.any((r) => r.wall == Wall.east), isTrue);
+      // ...and back home: the auto run must clean itself up
+      ed.place(ApplianceKind.sink, Wall.north, homeU);
+      expect(plan.runs.any((r) => r.wall == Wall.east), isFalse);
+      expect(north.sinkAt, isNotNull);
+      // same for a freestanding fridge parked on a bare wall
+      ed.place(ApplianceKind.fridge, Wall.east, 1.7);
+      expect(plan.runs.any((r) => r.wall == Wall.east), isTrue);
+      final west = plan.runs.firstWhere((r) => r.wall == Wall.west);
+      ed.place(ApplianceKind.fridge, Wall.west, west.a + 0.1);
+      expect(plan.runs.any((r) => r.wall == Wall.east), isFalse);
+    });
+
     test('fridge-only runs survive a JSON round-trip', () {
       final plan = lShape();
       PlanEditor(plan).place(ApplianceKind.fridge, Wall.east, 2.0);
