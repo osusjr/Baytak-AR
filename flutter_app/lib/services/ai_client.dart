@@ -18,12 +18,14 @@ import '../config/demo_config.dart';
 /// calls are proxied through the retailer's backend. Seam documented in
 /// README "Going to production".
 
-/// Tried in order. NVIDIA retires hosted model ids over time; an unknown
-/// id answers 404 (plain text), so each one falls through to the next.
-/// Verified live on integrate.api.nvidia.com, 2026-07.
+/// Tried in order. NVIDIA retires hosted model ids over time (unknown ids
+/// answer 404) and individual free-tier models can hang under load (seen
+/// live with llama-4-maverick, 2026-07), so BOTH cases fall through to the
+/// next id. Nemotron leads: it is the document/drawing specialist and
+/// answered in ~1-2 s in every live test.
 const aiVisionModels = [
-  'meta/llama-4-maverick-17b-128e-instruct', // multimodal all-rounder
   'nvidia/nemotron-nano-12b-v2-vl', // document/drawing specialist
+  'meta/llama-4-maverick-17b-128e-instruct', // multimodal all-rounder
   'mistralai/mistral-small-4-119b-2603',
   'meta/llama-3.2-90b-vision-instruct',
 ];
@@ -179,19 +181,8 @@ Future<String> visionCall({
     'authorization': 'Bearer $key',
   };
 
-  Future<http.Response> post(String body) async {
-    try {
-      return await http
-          .post(Uri.parse(_endpoint), headers: headers, body: body)
-          .timeout(const Duration(seconds: 90));
-    } on Exception catch (e) {
-      throw AiClientException(
-          'Could not reach the NVIDIA API - check the internet '
-          'connection.\n\n$e');
-    }
-  }
-
   http.Response? resp;
+  Object? lastNetworkError;
   for (final model in aiVisionModels) {
     final body = jsonEncode({
       'model': model,
@@ -210,13 +201,30 @@ Future<String> visionCall({
         }
       ],
     });
-    resp = await post(body);
+    try {
+      resp = await http
+          .post(Uri.parse(_endpoint), headers: headers, body: body)
+          .timeout(const Duration(seconds: 45));
+    } on Exception catch (e) {
+      // A free-tier model can hang under load while its siblings answer in
+      // seconds (observed live) - a timeout here moves down the chain
+      // instead of failing the whole call. True no-connectivity errors
+      // fail fast per attempt, so looping costs little.
+      lastNetworkError = e;
+      resp = null;
+      continue;
+    }
     // Unknown/retired model ids answer 404 (routing happens before auth);
     // anything else - success or a real error - stops the fallback chain.
     if (resp.statusCode != 404) break;
   }
-  resp!;
 
+  if (resp == null) {
+    throw AiClientException(
+        'Could not reach the NVIDIA API - the models are busy or the '
+        'internet connection is down. Try again in a moment.\n\n'
+        '$lastNetworkError');
+  }
   if (resp.statusCode == 404) {
     throw AiClientException(
         'None of the free NVIDIA vision models responded (tried: '
