@@ -33,7 +33,26 @@ baytak_ar/
 └── docs/                 Isometric verification renders
 ```
 
-## New in v17
+## New in Prototype v1 (build 19)
+
+**Drag the appliances (IKEA-planner-style).** The Design studio's 2D plan
+is now interactive: grab the **S**ink, **O**ven or **F**ridge chip and drag
+it along any cabinet run - across runs too. A live label reads out the
+position in metres while you drag; edge margins, sink↔oven separation and
+the fridge slot are enforced so every drop is buildable, and "Build in
+3D & AR" re-extrudes the edited plan instantly. No need to redraw a
+blueprint to try "what if the fridge was on the other wall".
+
+**Blueprint reading actually measured.** A reproducible benchmark
+(`tools/bench/`) scores vision models against three ground-truth
+blueprints. Result: `qwen/qwen3.5-397b-a17b` reads all three perfectly
+(100/100/100) and now leads the chain; the previous leader hung on every
+call (the "every blueprint gives the same kitchen" bug). A prompt echo
+guard rejects answers that parrot the schema example instead of measuring
+the drawing. Optional second provider: a free Gemini key adds
+`gemini-3.5-flash` to the fallback chain.
+
+## v17
 
 **Design studio (IKEA-planner-style).** Every generated kitchen is broken
 into elements the customer restyles live: wall paint, floor, worktops,
@@ -47,10 +66,10 @@ Profile → Baytak studio.
 
 **Zero-setup AI on free NVIDIA models.** The provider/API-key pickers are
 gone. Blueprint reading and room analysis run against free NVIDIA-hosted
-vision models (`meta/llama-4-maverick-17b-128e-instruct` first, with a
-fallback chain) - the key ships with the build (`--dart-define`) or via the
-Supabase `demo_config` table, and images are auto-compressed on-device to
-NVIDIA's inline limit. Users never see a key field.
+vision models (benchmark-ranked chain, see `tools/bench/`) - the key ships
+with the build (`--dart-define`) or via the Supabase `demo_config` table,
+and images are auto-compressed on-device to NVIDIA's inline limit. Users
+never see a key field.
 
 **Cloud catalogue (Supabase).** Products and hosted GLBs can live in a free
 Supabase project instead of the APK - the store updates products server
@@ -62,13 +81,35 @@ bundled catalogue offline. See `supabase/README.md`.
 ```bash
 flutter run \
   --dart-define=NVIDIA_API_KEY=nvapi-...            # free @ build.nvidia.com
+  --dart-define=GEMINI_API_KEY=AIza...              # optional 2nd free provider
   --dart-define=SUPABASE_URL=https://xxx.supabase.co \
   --dart-define=SUPABASE_ANON_KEY=eyJ...            # cloud catalogue
 ```
 
 With no defines the app runs fully offline: bundled catalogue, manual
 measurements in the Blueprint studio, full Design studio and 3D/AR builds.
-Only the two AI analysis buttons need the NVIDIA key.
+Only the two AI analysis buttons need a key (either provider works alone).
+
+**Which AI model?** Measured on this repo's benchmark (`tools/bench/`,
+three ground-truth blueprints, July 2026):
+
+| Model | Avg score | Speed | Cost |
+|---|---|---|---|
+| `qwen/qwen3.5-397b-a17b` (NVIDIA) | **100** | 7-35 s | free |
+| `nvidia/nemotron-nano-12b-v2-vl` | 83 | ~10 s | free |
+| `meta/llama-3.2-90b-vision-instruct` | 79 | ~18 s | free |
+
+The app tries them in that order. Notable rejects: `mistral-small-4`
+answered fast but drew cabinets on all four walls of *every* blueprint
+(the "same kitchen every time" bug), and `llama-4-maverick` /
+`nemotron-omni-reasoning` / `qwen3.5-122b` / `gemma-4-31b` hung on every
+call. If NVIDIA's free tier ever has a bad day, a free Gemini key
+(aistudio.google.com, no card) adds `gemini-3.5-flash` as an independent
+fallback. If the demo outgrows free
+tiers, the same OpenAI-style client works with paid keys - `gpt-5.4-mini`
+(~$0.006/analysis) or `gemini-3.5-flash` paid (~$0.012/analysis) are the
+best value; Anthropic's `claude-haiku-4-5` ($1/$5 per MTok) needs a small
+client change (different API schema).
 
 **Going to production:** consumer builds must not embed provider keys.
 The seam is `visionCall()` in `lib/services/ai_client.dart` - point it at a

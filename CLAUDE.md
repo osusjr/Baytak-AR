@@ -2,7 +2,8 @@
 
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
-Home Centre, THE One). Investor-grade demo, currently at v18.
+Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
+(internal build counter in lib/theme.dart, currently 19).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -10,7 +11,9 @@ Home Centre, THE One). Investor-grade demo, currently at v18.
   catalogue GLBs + thumbnails; design_studio_proto.py is the Python mirror
   of the on-device generator + v17 design system (option tables live in
   BOTH files - keep in sync); upload_catalog.py pushes the catalogue to
-  Supabase; generate_webar.py emits the static WebAR site into `webar/`.
+  Supabase; generate_webar.py emits the static WebAR site into `webar/`;
+  bench/ scores vision models against ground-truth blueprints (run it
+  before touching the aiVisionModels chain order).
 - `supabase/` - cloud catalogue schema (products + demo_config tables,
   public model/thumb buckets, anon read-only RLS) + setup README.
 - `webar/` - no-install AR site (host on Netlify/GitHub Pages, QR per
@@ -26,7 +29,8 @@ Home Centre, THE One). Investor-grade demo, currently at v18.
   models across restarts). Screens listing products subscribe via
   AppScope.of(context) so the swap repaints them.
 - Config: lib/config/demo_config.dart - all keys are --dart-define
-  (NVIDIA_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY). No key UI in-app.
+  (NVIDIA_API_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY).
+  No key UI in-app.
 - State: lib/state/app_state.dart - cart/favorites/orders/name persisted
   via shared_preferences, exposed by AppScope (InheritedNotifier).
 - 3D/AR: model_viewer_plus -> Google Scene Viewer. ONE WebView in the
@@ -51,17 +55,35 @@ Home Centre, THE One). Investor-grade demo, currently at v18.
   GLBs and TINTED by each material's baseColorFactor; designs can also
   remap which texture a slot uses (e.g. butcher-block worktop -> wood).
   Swap PNGs = new look, no code.
-- AI: lib/services/ai_client.dart - FREE NVIDIA-hosted vision models
-  (integrate.api.nvidia.com, OpenAI-style chat/completions, Bearer
-  nvapi-key). Model fallback chain in aiVisionModels (unknown ids answer
-  404 -> next). Images auto-downscaled/JPEG-recompressed on-device to
-  <=130 KB raw (NVIDIA ~180 KB inline data-URI limit, base64 +33%) in an
-  isolate via compute(). Key resolution: dart-define, else Supabase
-  demo_config cached to prefs ('cfg_nvidia_key'). No provider/key UI;
-  aiConfigured() gates the AI buttons. extractJsonObject() strips
-  <think> blocks/fences and isolates the first balanced JSON object.
-  blueprint_ai.dart reads kitchen blueprints -> LayoutPlan; room_ai.dart
-  reads room photos -> measurements + catalogue picks with x/z/rot.
+- AI: lib/services/ai_client.dart - FREE hosted vision models, tried as a
+  candidate chain: NVIDIA models from aiVisionModels (integrate.api.
+  nvidia.com, OpenAI-style chat/completions, Bearer nvapi-key), then
+  Gemini via Google's OpenAI-compatible endpoint when GEMINI_API_KEY is
+  set. Chain order is BENCHMARK-RANKED (tools/bench/, 3 ground-truth
+  blueprints): qwen3.5-397b-a17b scored 100/100/100, nemotron-nano-12b 83,
+  llama-3.2-90b 79. mistral-small-4 was REJECTED (drew runs on all four
+  walls of every drawing - the same-kitchen-every-time bug); llama-4-
+  maverick/nemotron-omni/qwen-122b/gemma-4 HANG (60 s per-candidate
+  timeout + 150 s total budget make every failure fall through to the
+  next candidate - do not "optimize" that away). Images
+  auto-downscaled/JPEG-recompressed on-device to <=130 KB raw (NVIDIA
+  ~180 KB inline data-URI limit, base64 +33%) in an isolate via compute().
+  Key resolution: dart-define, else Supabase demo_config cached to prefs
+  ('cfg_nvidia_key'/'cfg_gemini_key'). No provider/key UI; aiConfigured()
+  gates the AI buttons. extractJsonObject() strips <think> blocks/fences
+  and isolates the first balanced JSON object. blueprint_ai.dart reads
+  kitchen blueprints -> LayoutPlan (prompt forbids echoing the schema
+  example; an echo guard rejects width/depth < 1 m); room_ai.dart reads
+  room photos -> measurements + catalogue picks with x/z/rot.
+- Drag editor: lib/services/plan_editor.dart - pure logic for moving
+  sink/range/fridge along and across runs (edgeMargin 0.45, minSeparation
+  0.95, fridgeSpan 0.8; fridge snaps to run ends and re-clamps the
+  others). UI in design_studio_screen.dart: PlanTransform maps plan
+  metres <-> canvas px, _InteractivePlan drags S/O/F chips with a
+  chip-scoped PanGestureRecognizer (page scroll still wins elsewhere);
+  every edit persists the plan + bumps editor.revision for repaint.
+  Unit-tested in widget_test.dart - extend those tests when touching the
+  drag rules.
 - Analytics: lib/services/analytics.dart - on-device event counts
   (details/viewer/cart/generate/design/room_scene), screen in Profile.
 
@@ -72,9 +94,11 @@ Home Centre, THE One). Investor-grade demo, currently at v18.
   platforms: the default Zoom transition GPU-snapshots pages (broken on
   this GPU). CupertinoPageTransitionsBuilder no longer exists in the
   material library - do not reintroduce it.
-- Version stamps: home header shows "AR · vN"; Blueprint/Details/Room/
-  Design-studio screens carry "... vN - RENDER OK" strips. Bump ALL
-  stamps every change round - they are how stale builds are detected.
+- Version stamps: the user-facing label is kVersionLabel ('PROTOTYPE v1',
+  lib/theme.dart) shown in the home header; Blueprint/Details/Room/
+  Design-studio screens carry "... $kBuildStamp - RENDER OK" strips.
+  Bump kBuildNumber (theme.dart) EVERY change round - the build counter
+  is how stale builds are detected now that the label stays fixed.
 - main.dart installs an ErrorWidget.builder that paints exceptions on
   screen. Keep it until release.
 

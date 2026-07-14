@@ -18,19 +18,38 @@ import '../config/demo_config.dart';
 /// calls are proxied through the retailer's backend. Seam documented in
 /// README "Going to production".
 
-/// Tried in order. NVIDIA retires hosted model ids over time (unknown ids
-/// answer 404) and individual free-tier models can hang under load (seen
-/// live with llama-4-maverick, 2026-07), so BOTH cases fall through to the
-/// next id. Nemotron leads: it is the document/drawing specialist and
-/// answered in ~1-2 s in every live test.
+/// NVIDIA-hosted models, tried in order. Ranked by a REAL benchmark
+/// (tools/bench/, 2026-07: three distinct blueprints scored against ground
+/// truth): qwen3.5-397b read all three perfectly (100/100/100),
+/// nemotron-12b-vl averaged 83, llama-3.2-90b averaged 79. Excluded:
+/// mistral-small-4 (drew runs on all four walls of EVERY drawing - the
+/// exact same-kitchen-every-time bug), and llama-4-maverick/nemotron-omni/
+/// qwen-122b/gemma-4 (hung on every call). Unknown ids answer 404 and hung
+/// models time out - both fall through to the next candidate.
 const aiVisionModels = [
-  'nvidia/nemotron-nano-12b-v2-vl', // document/drawing specialist
-  'meta/llama-4-maverick-17b-128e-instruct', // multimodal all-rounder
-  'mistralai/mistral-small-4-119b-2603',
-  'meta/llama-3.2-90b-vision-instruct',
+  'qwen/qwen3.5-397b-a17b', // benchmark winner - perfect layout reads
+  'nvidia/nemotron-nano-12b-v2-vl', // fast document specialist, avg 83
+  'meta/llama-3.2-90b-vision-instruct', // avg 79, distinct layouts
 ];
 
-const _endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
+/// Optional second free provider: Gemini Flash through Google's
+/// OpenAI-compatible endpoint (same request shape). Used when a
+/// GEMINI_API_KEY is configured - an independent fallback if NVIDIA's
+/// free tier has a bad day.
+const aiGeminiModels = [
+  'gemini-3.5-flash',
+  'gemini-2.5-flash',
+];
+
+const _nvidiaEndpoint =
+    'https://integrate.api.nvidia.com/v1/chat/completions';
+const _geminiEndpoint =
+    'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
+
+class _Candidate {
+  const _Candidate(this.endpoint, this.key, this.model);
+  final String endpoint, key, model;
+}
 
 /// Inline data-URI images must stay under ~180 KB (NVIDIA rule; larger
 /// needs their assets API). Base64 inflates ~33%, so raw JPEG <= 130 KB.
@@ -46,25 +65,38 @@ class AiClientException implements Exception {
 
 /// Key resolution: build-time define first, then the key cached from the
 /// Supabase demo_config table (written by RemoteCatalog.sync).
-Future<String> _resolveKey() async {
-  if (DemoConfig.nvidiaApiKey.isNotEmpty) return DemoConfig.nvidiaApiKey;
+Future<String> _resolveKey(String define, String prefsKey) async {
+  if (define.isNotEmpty) return define;
   try {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString('cfg_nvidia_key') ?? '').trim();
+    return (prefs.getString(prefsKey) ?? '').trim();
   } catch (_) {
     return '';
   }
 }
 
-/// Whether AI features can run on this build (key present).
-Future<bool> aiConfigured() async => (await _resolveKey()).isNotEmpty;
+Future<List<_Candidate>> _candidates() async {
+  final nvidia =
+      await _resolveKey(DemoConfig.nvidiaApiKey, 'cfg_nvidia_key');
+  final gemini =
+      await _resolveKey(DemoConfig.geminiApiKey, 'cfg_gemini_key');
+  return [
+    if (nvidia.isNotEmpty)
+      for (final m in aiVisionModels) _Candidate(_nvidiaEndpoint, nvidia, m),
+    if (gemini.isNotEmpty)
+      for (final m in aiGeminiModels) _Candidate(_geminiEndpoint, gemini, m),
+  ];
+}
+
+/// Whether AI features can run on this build (any provider key present).
+Future<bool> aiConfigured() async => (await _candidates()).isNotEmpty;
 
 const aiNotConfiguredMessage =
-    'AI analysis is not configured on this build. Add a free key from '
-    'build.nvidia.com either at build time '
-    '(--dart-define=NVIDIA_API_KEY=nvapi-...) or in the Supabase '
-    'demo_config table - see the README. Manual measurements below work '
-    'offline.';
+    'AI analysis is not configured on this build. Add a free key '
+    '(build.nvidia.com or aistudio.google.com) at build time '
+    '(--dart-define=NVIDIA_API_KEY=... / GEMINI_API_KEY=...) or in the '
+    'Supabase demo_config table - see the README. Manual measurements '
+    'below work offline.';
 
 // ---------------------------------------------------------------------------
 // image preparation: decode -> downscale -> JPEG until under budget.
@@ -169,24 +201,26 @@ Future<String> visionCall({
   required String prompt,
   int maxTokens = 4096,
 }) async {
-  final key = await _resolveKey();
-  if (key.isEmpty) throw AiClientException(aiNotConfiguredMessage);
+  final candidates = await _candidates();
+  if (candidates.isEmpty) throw AiClientException(aiNotConfiguredMessage);
 
   final (prepared, mime) = await _prepareImage(imageBytes, mediaType);
   final dataUri = 'data:$mime;base64,${base64Encode(prepared)}';
 
-  final headers = {
-    'content-type': 'application/json',
-    'accept': 'application/json',
-    'authorization': 'Bearer $key',
-  };
-
-  http.Response? resp;
-  Object? lastNetworkError;
-  for (final model in aiVisionModels) {
+  // Every failure mode falls through to the next candidate: retired ids
+  // (404), hung free-tier models (timeout - observed live), rate limits,
+  // even a revoked key when a second provider is configured. Stop trying
+  // once the total budget is spent so the UI never waits forever.
+  http.Response? ok;
+  http.Response? lastResp;
+  Object? lastError;
+  final clock = Stopwatch()..start();
+  for (final c in candidates) {
+    if (clock.elapsed > const Duration(seconds: 150)) break;
     final body = jsonEncode({
-      'model': model,
-      'max_tokens': maxTokens,
+      'model': c.model,
+      // qwen thinks before answering - give it output headroom
+      'max_tokens': c.model.startsWith('qwen/') ? 8192 : maxTokens,
       'temperature': 0.2,
       'messages': [
         {
@@ -201,54 +235,50 @@ Future<String> visionCall({
         }
       ],
     });
+    http.Response attempt;
     try {
-      resp = await http
-          .post(Uri.parse(_endpoint), headers: headers, body: body)
-          .timeout(const Duration(seconds: 45));
+      attempt = await http.post(
+        Uri.parse(c.endpoint),
+        headers: {
+          'content-type': 'application/json',
+          'accept': 'application/json',
+          'authorization': 'Bearer ${c.key}',
+        },
+        body: body,
+      ).timeout(const Duration(seconds: 60));
     } on Exception catch (e) {
-      // A free-tier model can hang under load while its siblings answer in
-      // seconds (observed live) - a timeout here moves down the chain
-      // instead of failing the whole call. True no-connectivity errors
-      // fail fast per attempt, so looping costs little.
-      lastNetworkError = e;
-      resp = null;
+      lastError = e;
       continue;
     }
-    // Unknown/retired model ids answer 404 (routing happens before auth);
-    // anything else - success or a real error - stops the fallback chain.
-    if (resp.statusCode != 404) break;
+    if (attempt.statusCode == 200) {
+      ok = attempt;
+      break;
+    }
+    lastResp = attempt;
+    final excerpt = attempt.body.length > 200
+        ? attempt.body.substring(0, 200)
+        : attempt.body;
+    lastError = 'HTTP ${attempt.statusCode} from ${c.model}: $excerpt';
   }
 
-  if (resp == null) {
+  if (ok == null) {
+    final status = lastResp?.statusCode;
+    if (status == 401 || status == 403) {
+      throw AiClientException(
+          'The AI provider rejected the demo key ($status). Regenerate a '
+          'free key (build.nvidia.com / aistudio.google.com) and update '
+          'the build or the Supabase demo_config row.');
+    }
+    if (status == 429) {
+      throw AiClientException(
+          'Free-tier rate limit reached. Wait a minute and try again.');
+    }
     throw AiClientException(
-        'Could not reach the NVIDIA API - the models are busy or the '
-        'internet connection is down. Try again in a moment.\n\n'
-        '$lastNetworkError');
+        'None of the free vision models answered - they may be busy, or '
+        'the internet connection is down. Try again in a moment.\n\n'
+        'Last error: $lastError');
   }
-  if (resp.statusCode == 404) {
-    throw AiClientException(
-        'None of the free NVIDIA vision models responded (tried: '
-        '${aiVisionModels.join(', ')}). The hosted catalogue may have '
-        'rotated - update aiVisionModels in ai_client.dart.');
-  }
-  if (resp.statusCode == 401 || resp.statusCode == 403) {
-    throw AiClientException(
-        'The NVIDIA API rejected the demo key (${resp.statusCode}). '
-        'Regenerate a free key at build.nvidia.com and update the build '
-        'or the Supabase demo_config row.');
-  }
-  if (resp.statusCode == 429) {
-    throw AiClientException(
-        'Free-tier rate limit reached (~40 analyses/min). Wait a moment '
-        'and try again.');
-  }
-  if (resp.statusCode != 200) {
-    // error bodies are not always JSON (or present) - show an excerpt
-    final excerpt =
-        resp.body.length > 400 ? resp.body.substring(0, 400) : resp.body;
-    throw AiClientException(
-        'NVIDIA API error ${resp.statusCode}:\n$excerpt');
-  }
+  final resp = ok;
 
   try {
     final data = jsonDecode(resp.body) as Map<String, dynamic>;

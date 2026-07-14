@@ -23,6 +23,12 @@ class DemoConfig {
 
   static const nvidiaApiKey =
       String.fromEnvironment('NVIDIA_API_KEY', defaultValue: '');
+
+  /// Optional second FREE provider (aistudio.google.com key, no card):
+  /// adds Gemini Flash to the vision fallback chain for extra reliability.
+  static const geminiApiKey =
+      String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
+
   static const supabaseUrl =
       String.fromEnvironment('SUPABASE_URL', defaultValue: '');
   static const supabaseAnonKey =

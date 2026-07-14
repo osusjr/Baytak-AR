@@ -7,7 +7,9 @@ import 'package:baytak_ar/main.dart';
 import 'package:baytak_ar/services/ai_client.dart';
 import 'package:baytak_ar/services/kitchen_design.dart';
 import 'package:baytak_ar/services/kitchen_generator.dart';
+import 'package:baytak_ar/services/plan_editor.dart';
 import 'package:baytak_ar/state/app_state.dart';
+import 'package:baytak_ar/theme.dart';
 
 void main() {
   setUpAll(() {
@@ -20,7 +22,7 @@ void main() {
     await tester.pumpWidget(BaytakArApp(state: AppState(prefs)));
     await tester.pump();
     expect(find.text('Baytak'), findsOneWidget);
-    expect(find.text('AR · v18'), findsOneWidget);
+    expect(find.text(kVersionLabel), findsOneWidget);
   });
 
   test('LayoutPlan JSON round-trips through toJson/fromJson', () {
@@ -75,6 +77,83 @@ void main() {
     final ghost = byId('custom_123456');
     expect(ghost.title, 'Generated design');
     expect(ghost.priceJd, 0);
+  });
+
+  group('PlanEditor drag rules', () {
+    LayoutPlan lShape() => const KitchenSpec(
+          widthM: 4.2,
+          depthM: 3.4,
+          layout: KitchenLayout.lShape,
+          island: true,
+        ).toPlan();
+
+    test('sink clamps to the usable span and respects the range', () {
+      final plan = lShape();
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      ed.moveAppliance(ApplianceKind.sink, north, -5);
+      expect(north.sinkAt, closeTo(north.a + PlanEditor.edgeMargin, 1e-9));
+      // pushing far right: the range sits near the run end, so the sink
+      // stops one separation short of it instead of reaching the edge
+      ed.moveAppliance(ApplianceKind.sink, north, 99);
+      expect(north.sinkAt,
+          closeTo(north.rangeAt! - PlanEditor.minSeparation, 1e-9));
+      expect(ed.revision, 2);
+    });
+
+    test('sink keeps separation from the range on the same run', () {
+      final plan = lShape();
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      final range = north.rangeAt!;
+      ed.moveAppliance(ApplianceKind.sink, north, range - 0.1);
+      expect((north.sinkAt! - range).abs(),
+          greaterThanOrEqualTo(PlanEditor.minSeparation - 1e-9));
+    });
+
+    test('sink transfers to another run', () {
+      final plan = lShape();
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      final west = plan.runs.firstWhere((r) => r.wall == Wall.west);
+      final ok = ed.moveAppliance(ApplianceKind.sink, west, 2.0);
+      expect(ok, isTrue);
+      expect(north.sinkAt, isNull);
+      expect(west.sinkAt, isNotNull);
+      // west run has the fridge at its start - sink must clear it
+      expect(west.sinkAt!,
+          greaterThanOrEqualTo(west.a + PlanEditor.fridgeSpan +
+              PlanEditor.edgeMargin - 1e-9));
+    });
+
+    test('fridge snaps to the nearest end and pushes the sink clear', () {
+      final plan = lShape();
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      final west = plan.runs.firstWhere((r) => r.wall == Wall.west);
+      // move fridge from west run to the START of the north run,
+      // right where the sink currently sits
+      final ok = ed.moveFridge(north, north.a + 0.1);
+      expect(ok, isTrue);
+      expect(west.fridge, isNull);
+      expect(north.fridge, 'start');
+      // sink survived and cleared the fridge slot
+      expect(north.sinkAt, isNotNull);
+      expect(north.sinkAt!,
+          greaterThanOrEqualTo(north.a + PlanEditor.fridgeSpan +
+              PlanEditor.edgeMargin - 1e-9));
+    });
+
+    test('fridge refuses a run that is too short', () {
+      final plan = LayoutPlan(
+        widthM: 3.0,
+        depthM: 3.0,
+        runs: [RunPlan(wall: Wall.north, a: 0.5, b: 1.8)],
+      );
+      final ed = PlanEditor(plan);
+      expect(ed.moveFridge(plan.runs.first, 0.6), isFalse);
+      expect(plan.runs.first.fridge, isNull);
+    });
   });
 
   test('extractJsonObject survives think-blocks, fences and prose', () {

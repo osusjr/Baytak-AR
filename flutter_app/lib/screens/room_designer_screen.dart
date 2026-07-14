@@ -172,7 +172,7 @@ class _RoomDesignerScreenState extends State<RoomDesignerScreen> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('ROOM DESIGNER v18 - RENDER OK',
+          Text('ROOM DESIGNER · $kBuildStamp - RENDER OK',
               style: text.labelSmall?.copyWith(
                   color: Baytak.olive, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
