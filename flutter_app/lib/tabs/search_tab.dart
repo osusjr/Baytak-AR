@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/catalog.dart';
+import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/product_cards.dart';
 
@@ -35,7 +36,7 @@ class _SearchTabState extends State<SearchTab> {
 
   @override
   Widget build(BuildContext context) {
-    final text = Theme.of(context).textTheme;
+    AppScope.of(context); // rebuild when the cloud catalogue swaps in
     final results = _results;
     return SafeArea(
       bottom: false,

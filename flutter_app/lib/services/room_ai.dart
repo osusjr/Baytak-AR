@@ -5,12 +5,12 @@ import '../data/catalog.dart';
 import 'ai_client.dart';
 import 'kitchen_generator.dart';
 
-/// Sends a photo of the customer's room to the Anthropic vision API, which
-/// estimates the room's dimensions (from visual reference scales such as
-/// doors and ceiling height), identifies the room type, and picks items
-/// FROM THIS RETAILER'S CATALOGUE that physically fit and match the chosen
-/// style. Estimates from a single photo are approximate by nature - live
-/// AR measurement is the documented in-app-AR roadmap step.
+/// Sends a photo of the customer's room to a free NVIDIA-hosted vision
+/// model, which estimates the room's dimensions (from visual reference
+/// scales such as doors and ceiling height), identifies the room type, and
+/// picks items FROM THIS RETAILER'S CATALOGUE that physically fit and match
+/// the chosen style. Estimates from a single photo are approximate by
+/// nature - live AR measurement is the documented in-app-AR roadmap step.
 class RoomAnalysisException implements Exception {
   RoomAnalysisException(this.message);
   final String message;
@@ -130,11 +130,9 @@ Return JSON ONLY - no prose, no markdown fences:
 }
 ''';
 
-Future<RoomAnalysis> analyzeRoom(File image, String apiKey,
-    {required String style,
-    AiProvider provider = AiProvider.gemini}) async {
+Future<RoomAnalysis> analyzeRoom(File image, {required String style}) async {
   final bytes = await image.readAsBytes();
-  if (bytes.length > 4800000) {
+  if (bytes.length > 15 * 1024 * 1024) {
     throw RoomAnalysisException(
         'Photo is too large for analysis - re-pick it from the gallery.');
   }
@@ -144,26 +142,16 @@ Future<RoomAnalysis> analyzeRoom(File image, String apiKey,
   String text;
   try {
     text = await visionCall(
-      provider: provider,
-      apiKey: apiKey,
       imageBytes: bytes,
       mediaType: mediaType,
       prompt: _prompt(style),
-      maxTokens: 1000,
     );
   } on AiClientException catch (e) {
     throw RoomAnalysisException(e.message);
   }
 
   try {
-    var cleaned = text.trim();
-    if (cleaned.startsWith('```')) {
-      cleaned = cleaned
-          .replaceFirst(RegExp(r'^```[a-zA-Z]*\s*'), '')
-          .replaceFirst(RegExp(r'```\s*$'), '')
-          .trim();
-    }
-    final j = jsonDecode(cleaned) as Map<String, dynamic>;
+    final j = jsonDecode(extractJsonObject(text)) as Map<String, dynamic>;
 
     double numOf(dynamic v, double lo, double hi, double dflt) {
       final d = (v is num) ? v.toDouble() : double.tryParse('$v');

@@ -2,18 +2,31 @@
 
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
-Home Centre, THE One). Investor-grade demo, currently at v16.
+Home Centre, THE One). Investor-grade demo, currently at v17.
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
 - `tools/` - Python asset pipeline: generate_assets.py bakes the textured
-  catalogue GLBs + thumbnails; generate_webar.py emits the static WebAR
-  site into `webar/`.
+  catalogue GLBs + thumbnails; design_studio_proto.py is the Python mirror
+  of the on-device generator + v17 design system (option tables live in
+  BOTH files - keep in sync); upload_catalog.py pushes the catalogue to
+  Supabase; generate_webar.py emits the static WebAR site into `webar/`.
+- `supabase/` - cloud catalogue schema (products + demo_config tables,
+  public model/thumb buckets, anon read-only RLS) + setup README.
 - `webar/` - no-install AR site (host on Netlify/GitHub Pages, QR per
   product).
 
 ## Architecture that matters
-- Catalogue: lib/data/catalog.dart (5 demo products, bundled GLB assets).
+- Catalogue: lib/data/catalog.dart. Bundled 5-product set is the offline
+  fallback; demoCatalog/furnitureCatalog/specialProducts/bestDeals are now
+  GETTERS over a swappable list - lib/services/remote_catalog.dart
+  replaces it from Supabase when DemoConfig is set (assets cached in
+  documents dir by updated_at). byId() NEVER throws: falls back bundled ->
+  generated-registry -> placeholder (cart lines can outlive generated
+  models across restarts). Screens listing products subscribe via
+  AppScope.of(context) so the swap repaints them.
+- Config: lib/config/demo_config.dart - all keys are --dart-define
+  (NVIDIA_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY). No key UI in-app.
 - State: lib/state/app_state.dart - cart/favorites/orders/name persisted
   via shared_preferences, exposed by AppScope (InheritedNotifier).
 - 3D/AR: model_viewer_plus -> Google Scene Viewer. ONE WebView in the
@@ -21,22 +34,36 @@ Home Centre, THE One). Investor-grade demo, currently at v16.
   mid-layout broke page compositing on the test device - do not do it.
 - On-device generator: lib/services/kitchen_generator.dart. Plan-driven
   parametric builder + binary glTF writer. LayoutPlan (runs on any wall,
-  appliances, windows, island/peninsula, palette) -> textured GLB in app
-  documents, opened via file:// src. Also builds whole room scenes from
-  furniture placements (90-degree rotations only - keeps boxes
-  axis-aligned).
+  appliances, windows, island/peninsula, palette; toJson/fromJson) ->
+  textured GLB in app documents, opened via file:// src. Also builds whole
+  room scenes from furniture placements (90-degree rotations only - keeps
+  boxes axis-aligned).
+- Design system (v17): lib/services/kitchen_design.dart. KitchenDesign =
+  one choice per element (lower/upper/island cabinet finishes, worktop,
+  wall, floor, backsplash, hardware, handle bar/knob/none, door
+  slab/shaker) -> material color/texture overrides + geometry switches for
+  the generator. Upper cabinets have their own material slots
+  ('upper'/'upper_door'). Presets include all_light/all_dark and the three
+  AI palette names. UI: lib/screens/design_studio_screen.dart with live 2D
+  plan+elevation CustomPaint preview (NO WebView); every generate path
+  (AI one-tap, AI review, manual) lands there before 3D.
 - Textures: neutral PNGs in assets/textures/, embedded into generated
-  GLBs and TINTED by each material's baseColorFactor (palettes:
-  warm_walnut / light_oak / dark_modern). Swap PNGs = new look, no code.
-- AI: lib/services/ai_client.dart - provider-agnostic vision call.
-  Gemini (free tier, default; model fallback chain, 8192 output tokens
-  because thinking counts against the budget, responseMimeType JSON) or
-  Anthropic (paid). Keys entered in-app, stored in shared_preferences
-  only. blueprint_ai.dart reads kitchen blueprints -> LayoutPlan;
-  room_ai.dart reads room photos -> measurements + catalogue picks with
-  x/z/rot placements.
+  GLBs and TINTED by each material's baseColorFactor; designs can also
+  remap which texture a slot uses (e.g. butcher-block worktop -> wood).
+  Swap PNGs = new look, no code.
+- AI: lib/services/ai_client.dart - FREE NVIDIA-hosted vision models
+  (integrate.api.nvidia.com, OpenAI-style chat/completions, Bearer
+  nvapi-key). Model fallback chain in aiVisionModels (unknown ids answer
+  404 -> next). Images auto-downscaled/JPEG-recompressed on-device to
+  <=130 KB raw (NVIDIA ~180 KB inline data-URI limit, base64 +33%) in an
+  isolate via compute(). Key resolution: dart-define, else Supabase
+  demo_config cached to prefs ('cfg_nvidia_key'). No provider/key UI;
+  aiConfigured() gates the AI buttons. extractJsonObject() strips
+  <think> blocks/fences and isolates the first balanced JSON object.
+  blueprint_ai.dart reads kitchen blueprints -> LayoutPlan; room_ai.dart
+  reads room photos -> measurements + catalogue picks with x/z/rot.
 - Analytics: lib/services/analytics.dart - on-device event counts
-  (details/viewer/cart/generate/room_scene), screen in Profile.
+  (details/viewer/cart/generate/design/room_scene), screen in Profile.
 
 ## Device-specific landmines (test phone: Galaxy S9+, Android 10, Mali-G72)
 - Impeller is DISABLED in AndroidManifest (EnableImpeller=false): Mali
@@ -45,9 +72,9 @@ Home Centre, THE One). Investor-grade demo, currently at v16.
   platforms: the default Zoom transition GPU-snapshots pages (broken on
   this GPU). CupertinoPageTransitionsBuilder no longer exists in the
   material library - do not reintroduce it.
-- Version stamps: home header shows "AR · vN"; Blueprint/Details/Room
-  screens carry "... vN - RENDER OK" strips. Bump ALL stamps every
-  change round - they are how stale builds are detected.
+- Version stamps: home header shows "AR · vN"; Blueprint/Details/Room/
+  Design-studio screens carry "... vN - RENDER OK" strips. Bump ALL
+  stamps every change round - they are how stale builds are detected.
 - main.dart installs an ErrorWidget.builder that paints exceptions on
   screen. Keep it until release.
 
@@ -70,7 +97,9 @@ Home Centre, THE One). Investor-grade demo, currently at v16.
 ## Working conventions
 - All generated-geometry changes are prototyped and validated in Python
   (tools/ mirrors) BEFORE porting to Dart - coordinates are frozen from
-  the validated prototype.
+  the validated prototype. v17 design-system geometry (handles, shaker
+  fronts, upper-material split) lives in tools/design_studio_proto.py.
 - Honesty rule: demo limitations are stated in-app (photo-based room
   measurement vs live AR, on-device analytics vs backend, key handling).
-  Production seams are documented where they occur in code.
+  Production seams are documented where they occur in code (demo keys via
+  dart-define/demo_config vs a backend proxy; supabase/README.md).

@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'screens/onboarding_screen.dart';
 import 'screens/root_shell.dart';
+import 'services/remote_catalog.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 
@@ -24,7 +25,11 @@ Future<void> main() async {
         ),
       );
   final prefs = await SharedPreferences.getInstance();
-  runApp(BaytakArApp(state: AppState(prefs)));
+  final state = AppState(prefs);
+  runApp(BaytakArApp(state: state));
+  // Cloud catalogue (Supabase), when configured: fire-and-forget - the
+  // bundled catalogue shows instantly and is swapped once the sync lands.
+  RemoteCatalog.sync(state);
 }
 
 class BaytakArApp extends StatelessWidget {

@@ -6,10 +6,11 @@ import '../state/app_state.dart';
 import '../theme.dart';
 
 /// Shared grid geometry - loose enough for real font metrics on
-/// narrow screens (fixes 'bottom overflowed by N pixels').
+/// narrow screens (fixes 'bottom overflowed by N pixels'; the special
+/// rail also clears the taller fallback-font metrics used in tests).
 const kGridAspect = 0.70;
 const kDealRailHeight = 240.0;
-const kSpecialRailHeight = 252.0;
+const kSpecialRailHeight = 258.0;
 
 void openProduct(BuildContext context, DemoModel m) =>
     Navigator.of(context).push(
@@ -39,7 +40,7 @@ class ProductCard extends StatelessWidget {
                 fit: StackFit.expand,
                 children: [
                   Container(color: Baytak.well),
-                  Image.asset(model.thumb, fit: BoxFit.cover),
+                  Image(image: productImage(model.thumb), fit: BoxFit.cover),
                   Positioned(
                     top: 6,
                     left: 6,
@@ -155,7 +156,8 @@ class SpecialCard extends StatelessWidget {
             children: [
               AspectRatio(
                 aspectRatio: 16 / 9.4,
-                child: Image.asset(model.hero ?? model.thumb,
+                child: Image(
+                    image: productImage(model.hero ?? model.thumb),
                     fit: BoxFit.cover),
               ),
               Padding(
@@ -226,7 +228,8 @@ class DealCard extends StatelessWidget {
             children: [
               AspectRatio(
                 aspectRatio: 1.35,
-                child: Image.asset(model.thumb, fit: BoxFit.cover),
+                child:
+                    Image(image: productImage(model.thumb), fit: BoxFit.cover),
               ),
               Expanded(
                 child: Padding(

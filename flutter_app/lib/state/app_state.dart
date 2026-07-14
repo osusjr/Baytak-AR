@@ -119,6 +119,11 @@ class AppState extends ChangeNotifier {
     return order;
   }
 
+  // ---- catalogue ----
+  /// RemoteCatalog.sync installed a new catalogue - repaint everything
+  /// that lists products (AppScope dependents).
+  void catalogUpdated() => notifyListeners();
+
   // ---- profile ----
   void setName(String name) {
     userName = name.trim().isEmpty ? 'Guest' : name.trim();

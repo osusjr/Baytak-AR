@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/catalog.dart';
+import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/product_cards.dart';
 
@@ -34,7 +35,7 @@ class HomeTab extends StatelessWidget {
                       style: text.titleSmall?.copyWith(
                           color: Baytak.olive, fontWeight: FontWeight.w700)),
                   const Spacer(),
-                  Text('AR · v16', style: Baytak.mono(color: Baytak.brass)),
+                  Text('AR · v17', style: Baytak.mono(color: Baytak.brass)),
                 ],
               ),
             ),
@@ -68,6 +69,7 @@ class _MainCategoryPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    AppScope.of(context); // rebuild when the cloud catalogue swaps in
     return ListView(
       padding: const EdgeInsets.only(bottom: 26),
       children: [
@@ -108,6 +110,7 @@ class _CategoryPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    AppScope.of(context); // rebuild when the cloud catalogue swaps in
     final items =
         demoCatalog.where((m) => m.category == category).toList();
     return ListView(

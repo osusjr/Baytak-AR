@@ -8,14 +8,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ai_client.dart';
 import '../services/analytics.dart';
 import '../services/blueprint_ai.dart';
+import '../services/kitchen_design.dart';
 import '../services/kitchen_generator.dart';
 import '../theme.dart';
-import 'product_details_screen.dart';
+import 'design_studio_screen.dart';
 
-/// Blueprint studio v12: photo -> AI analysis (Anthropic vision API, user's
-/// own key) -> LayoutPlan -> on-device generation. Manual measurements
-/// remain as the offline path. Production note: shipped apps must proxy
-/// API calls through their own backend instead of collecting raw keys.
+/// Blueprint studio v17: photo -> AI analysis (free NVIDIA-hosted vision
+/// models, zero setup in-app) -> LayoutPlan -> the Design studio, where
+/// every element (walls, floor, worktops, cabinets, handles) is swappable
+/// before the phone extrudes the 3D model. Manual measurements remain as
+/// the offline path. Production note: shipped apps proxy AI calls through
+/// their own backend - see README "Going to production".
 class BlueprintScreen extends StatefulWidget {
   const BlueprintScreen({super.key});
 
@@ -29,12 +32,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
   bool _generating = false;
   String? _stage;
 
-  final _keyCtrl = TextEditingController();
-  AiProvider _provider = AiProvider.gemini;
-  final Map<AiProvider, String> _keys = {
-    AiProvider.gemini: '',
-    AiProvider.anthropic: '',
-  };
+  bool? _aiReady; // null = still checking
   bool _analyzing = false;
   LayoutPlan? _aiPlan;
 
@@ -45,13 +43,6 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
   KitchenLayout _layout = KitchenLayout.lShape;
   bool _island = true;
 
-  static const _stages = [
-    'Reading measurements...',
-    'Placing runs and appliances...',
-    'Extruding cabinetry...',
-    'Writing glTF model...',
-  ];
-
   @override
   void initState() {
     super.initState();
@@ -60,7 +51,6 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
 
   @override
   void dispose() {
-    _keyCtrl.dispose();
     _wCtrl.dispose();
     _dCtrl.dispose();
     _iwCtrl.dispose();
@@ -71,42 +61,15 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
   Future<void> _restore() async {
     final prefs = await SharedPreferences.getInstance();
     final p = prefs.getString('blueprint_path');
-    _keys[AiProvider.gemini] = prefs.getString('gemini_key') ?? '';
-    _keys[AiProvider.anthropic] = prefs.getString('anthropic_key') ?? '';
-    final prov = prefs.getString('ai_provider');
+    final ready = await aiConfigured();
     if (!mounted) return;
     setState(() {
       if (p != null && File(p).existsSync()) {
         _uploadedPath = p;
         _useUpload = true;
       }
-      _provider =
-          prov == 'anthropic' ? AiProvider.anthropic : AiProvider.gemini;
-      _keyCtrl.text = _keys[_provider]!;
+      _aiReady = ready;
     });
-  }
-
-  Future<void> _setProvider(AiProvider p) async {
-    _keys[_provider] = _keyCtrl.text.trim();
-    setState(() {
-      _provider = p;
-      _keyCtrl.text = _keys[p]!;
-    });
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('ai_provider', p.name);
-  }
-
-  Future<void> _saveKey() async {
-    _keys[_provider] = _keyCtrl.text.trim();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('gemini_key', _keys[AiProvider.gemini]!);
-    await prefs.setString('anthropic_key', _keys[AiProvider.anthropic]!);
-    await prefs.setString('ai_provider', _provider.name);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-          const SnackBar(content: Text('Key saved on this device')));
   }
 
   Future<void> _pick(ImageSource src) async {
@@ -146,50 +109,47 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
     });
   }
 
+  void _openStudio(LayoutPlan plan, String source) {
+    AppAnalytics.log('generate');
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => DesignStudioScreen(
+              plan: plan,
+              initial: KitchenDesign.fromPalette(plan.palette),
+              source: source,
+            )));
+  }
+
   // ------------------------------------------------------------------ AI --
   Future<void> _analyze() async {
-    final key = _keyCtrl.text.trim();
-    if (_uploadedPath == null || key.isEmpty) return;
+    if (_uploadedPath == null) return;
     setState(() {
       _analyzing = true;
       _aiPlan = null;
     });
     try {
-      final plan = await analyzeBlueprint(File(_uploadedPath!), key, provider: _provider);
+      final plan = await analyzeBlueprint(File(_uploadedPath!));
       if (!mounted) return;
       setState(() => _aiPlan = plan);
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(
             content: Text(
-                'AI read ${plan.runs.length} run(s) - review, then generate')));
+                'AI read ${plan.runs.length} run(s) - review, then open '
+                'the studio')));
     } catch (e) {
       if (!mounted) return;
-      showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Analysis failed'),
-          content: SingleChildScrollView(child: Text('$e')),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Close')),
-          ],
-        ),
-      );
+      _showError('Analysis failed', e);
     } finally {
       if (mounted) setState(() => _analyzing = false);
     }
   }
 
   Future<void> _designOneTap() async {
-    final key = _keyCtrl.text.trim();
-    if (_uploadedPath == null || key.isEmpty) return;
+    if (_uploadedPath == null) return;
     const stages = [
-      'Reading the drawing (AI)...',
+      'Reading the drawing (free NVIDIA AI)...',
       'Choosing layout & finish...',
-      'Extruding cabinetry...',
-      'Writing glTF model...',
+      'Opening the design studio...',
     ];
     setState(() {
       _generating = true;
@@ -197,54 +157,51 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
     });
     try {
       LayoutPlan? plan;
-      GeneratedKitchen? gen;
       for (var i = 0; i < stages.length; i++) {
         if (!mounted) return;
         setState(() => _stage = stages[i]);
         if (i == 0) {
-          plan = await analyzeBlueprint(File(_uploadedPath!), key, provider: _provider);
-        } else if (i == 2) {
-          gen = await generateFromPlan(plan!,
-              source: 'AI reading of your blueprint');
+          plan = await analyzeBlueprint(File(_uploadedPath!));
         } else {
-          await Future<void>.delayed(const Duration(milliseconds: 430));
+          await Future<void>.delayed(const Duration(milliseconds: 380));
         }
       }
       if (!mounted) return;
       final p = plan!;
-      final g = gen!;
       setState(() {
         _generating = false;
         _stage = null;
         _aiPlan = p;
       });
-      AppAnalytics.log('generate');
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(
-            content: Text('AI designed it - ${g.triangles} triangles, '
-                '${p.palette.replaceAll('_', ' ')} finish')));
-      Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => ProductDetailsScreen(model: g.model)));
+            content: Text('AI chose a ${KitchenDesign.presetLabels[p.palette] ?? p.palette} '
+                'look - now make it yours')));
+      _openStudio(p, 'the AI reading of your blueprint');
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _generating = false;
         _stage = null;
       });
-      showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('AI design failed'),
-          content: SingleChildScrollView(child: Text('$e')),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Close')),
-          ],
-        ),
-      );
+      _showError('AI design failed', e);
     }
+  }
+
+  void _showError(String title, Object e) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(child: Text('$e')),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   String _planText(LayoutPlan p) {
@@ -309,50 +266,6 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
     return null;
   }
 
-  Future<void> _run(Future<GeneratedKitchen> Function() job) async {
-    setState(() => _generating = true);
-    try {
-      GeneratedKitchen? gen;
-      for (var i = 0; i < _stages.length; i++) {
-        if (!mounted) return;
-        setState(() => _stage = _stages[i]);
-        await Future<void>.delayed(const Duration(milliseconds: 430));
-        if (i == 2) gen = await job();
-      }
-      if (!mounted) return;
-      setState(() {
-        _generating = false;
-        _stage = null;
-      });
-      AppAnalytics.log('generate');
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-            content: Text(
-                'Generated on this device - ${gen!.triangles} triangles')));
-      Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => ProductDetailsScreen(model: gen!.model)));
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _generating = false;
-        _stage = null;
-      });
-      showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Generation failed'),
-          content: SingleChildScrollView(child: Text('$e')),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Close')),
-          ],
-        ),
-      );
-    }
-  }
-
   void _generateManual() {
     final w = _parse(_wCtrl), d = _parse(_dCtrl);
     final iw = _parse(_iwCtrl), id = _parse(_idCtrl);
@@ -363,14 +276,15 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
         ..showSnackBar(SnackBar(content: Text(err)));
       return;
     }
-    _run(() => generateKitchen(KitchenSpec(
-          widthM: w!,
-          depthM: d!,
-          layout: _layout,
-          island: _island,
-          islandWM: iw ?? 1.6,
-          islandDM: id ?? 0.9,
-        )));
+    final plan = KitchenSpec(
+      widthM: w!,
+      depthM: d!,
+      layout: _layout,
+      island: _island,
+      islandWM: iw ?? 1.6,
+      islandDM: id ?? 0.9,
+    ).toPlan();
+    _openStudio(plan, 'your measurements');
   }
 
   // --------------------------------------------------------------- build --
@@ -378,7 +292,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final fileName = _uploadedPath?.split(Platform.pathSeparator).last;
-    final keyReady = _keyCtrl.text.trim().isNotEmpty;
+    final aiReady = _aiReady == true;
 
     Widget numField(TextEditingController c, String label) => TextField(
           controller: c,
@@ -393,23 +307,6 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
                 OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
           ),
         );
-
-    Widget providerBtn(AiProvider prov) {
-      final selected = _provider == prov;
-      return Expanded(
-        child: OutlinedButton(
-          onPressed: () => _setProvider(prov),
-          style: OutlinedButton.styleFrom(
-            backgroundColor: selected ? Baytak.ink : Colors.white,
-            foregroundColor: selected ? Baytak.sand : Baytak.ink,
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-          ),
-          child: Text(prov.label,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 12)),
-        ),
-      );
-    }
 
     Widget layoutBtn(KitchenLayout l) {
       final selected = _layout == l;
@@ -433,7 +330,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('BLUEPRINT STUDIO v16 - RENDER OK',
+          Text('BLUEPRINT STUDIO v17 - RENDER OK',
               style: text.labelSmall?.copyWith(
                   color: Baytak.olive, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
@@ -541,9 +438,11 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
               style: text.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
           Text(
-            'One tap. The AI reads your uploaded drawing - measurements, '
-            'layout, appliances - chooses a finish palette to suit it, and '
-            'this phone builds the 3D kitchen. Nothing to type.',
+            'One tap. A free NVIDIA-hosted vision model reads your uploaded '
+            'drawing - measurements, layout, appliances - picks a starting '
+            'look, and the Design studio opens so you can restyle every '
+            'element before this phone builds the 3D kitchen. Nothing to '
+            'type, no account, no key.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.45),
           ),
@@ -569,26 +468,28 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-                onPressed: (_uploadedPath != null && keyReady)
+                onPressed: (_uploadedPath != null && aiReady)
                     ? _designOneTap
                     : null,
                 child: const Text('Design my kitchen with AI'),
               ),
             ),
-          if (_uploadedPath == null || !keyReady) ...[
+          if (_uploadedPath == null || !aiReady) ...[
             const SizedBox(height: 6),
             Text(
               _uploadedPath == null
                   ? 'Upload a drawing above to enable this.'
-                  : 'Add your API key below (AI setup) to enable this.',
+                  : (_aiReady == null
+                      ? 'Checking AI availability...'
+                      : aiNotConfiguredMessage),
               style: text.bodySmall?.copyWith(
-                  color: Baytak.ink.withValues(alpha: 0.5)),
+                  color: Baytak.ink.withValues(alpha: 0.5), height: 1.35),
             ),
           ],
         ],
       ),
 
-      // 4 - advanced: review the AI plan before generating
+      // 4 - advanced: review the AI plan before opening the studio
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -597,61 +498,16 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
           const SizedBox(height: 6),
           Text(
             'The AI reads the drawing and returns the layout for the '
-            'on-device generator. Pick a provider - the key is yours and '
-            'stays on this phone. Needs internet.',
+            'on-device generator. Runs on free NVIDIA-hosted models '
+            '(${aiVisionModels.first} first). Needs internet.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.4),
-          ),
-          const SizedBox(height: 10),
-          Row(children: [
-            providerBtn(AiProvider.gemini),
-            const SizedBox(width: 8),
-            providerBtn(AiProvider.anthropic),
-          ]),
-          const SizedBox(height: 6),
-          Text(
-            _provider == AiProvider.gemini
-                ? 'Free key from aistudio.google.com - no card needed. '
-                    'Rate-limited, but plenty for demos.'
-                : 'Paid key from console.anthropic.com - production '
-                    'quality, a few fils per analysis.',
-            style: text.bodySmall?.copyWith(
-                color: Baytak.ink.withValues(alpha: 0.55), height: 1.35),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _keyCtrl,
-                  obscureText: true,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    labelText: _provider == AiProvider.gemini
-                        ? 'Gemini API key (free)'
-                        : 'Anthropic API key',
-                    hintText: _provider == AiProvider.gemini
-                        ? 'AIza... or AQ...'
-                        : 'sk-ant-...',
-                    isDense: true,
-                    filled: true,
-                    fillColor: Baytak.sand,
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton(
-                  onPressed: keyReady ? _saveKey : null,
-                  child: const Text('Save')),
-            ],
           ),
           const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              onPressed: (_uploadedPath != null && keyReady && !_analyzing)
+              onPressed: (_uploadedPath != null && aiReady && !_analyzing)
                   ? _analyze
                   : null,
               child: _analyzing
@@ -677,9 +533,9 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
               child: FilledButton(
                 onPressed: _generating
                     ? null
-                    : () => _run(() => generateFromPlan(_aiPlan!,
-                        source: 'AI analysis of your blueprint')),
-                child: const Text('Generate from AI plan'),
+                    : () => _openStudio(
+                        _aiPlan!, 'the AI analysis of your blueprint'),
+                child: const Text('Open in Design studio'),
               ),
             ),
           ],
@@ -694,8 +550,8 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
               style: text.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
           Text(
-            'No key or no internet? Type the numbers printed on the '
-            'blueprint and generate from them.',
+            'No internet? Type the numbers printed on the blueprint - the '
+            'Design studio and 3D build run entirely on this phone.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.4),
           ),
@@ -736,31 +592,13 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
               ],
             ),
           const SizedBox(height: 12),
-          if (_generating)
-            Row(
-              children: [
-                const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2.4, color: Baytak.brass),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(_stage ?? 'Starting...',
-                      style: text.bodyMedium
-                          ?.copyWith(fontWeight: FontWeight.w600)),
-                ),
-              ],
-            )
-          else
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: _generateManual,
-                child: const Text('Generate from measurements'),
-              ),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: _generateManual,
+              child: const Text('Open in Design studio'),
             ),
+          ),
         ],
       ),
 
@@ -774,10 +612,10 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
           Text(
             'The AI (or your typed numbers) produces a layout plan: runs on '
             'any wall with positioned sink, range and fridge, windows, and '
-            'an island or bar - cooktop on the bar included. The on-device '
-            'parametric builder then extrudes that plan into one solid '
-            'glTF model in milliseconds. Every drawing produces its own '
-            'kitchen.',
+            'an island or bar. The Design studio then breaks that plan into '
+            'elements - walls, floor, worktops, upper and lower cabinets, '
+            'handles - and the on-device parametric builder extrudes your '
+            'exact choices into one solid glTF model in milliseconds.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.7), height: 1.45),
           ),

@@ -88,8 +88,11 @@ class _CartRow extends StatelessWidget {
             children: [
               ClipRRect(
                 borderRadius: BorderRadius.circular(14),
-                child: Image.asset(model.thumb,
-                    width: 74, height: 74, fit: BoxFit.cover),
+                child: Image(
+                    image: productImage(model.thumb),
+                    width: 74,
+                    height: 74,
+                    fit: BoxFit.cover),
               ),
               const SizedBox(width: 12),
               Expanded(
