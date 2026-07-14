@@ -249,8 +249,85 @@ def l_peninsula():
     }
 
 
+# --------------------------------------------- BP-E U-shape + bar peninsula
+def u_peninsula():
+    """Reconstruction of the owner's real test blueprint (2026-07): U-ish
+    kitchen 3.2 x 3.76 m, counters on both side walls, double sink + fridge
+    on the east run, bar peninsula with the cooktop attached to the west
+    run, 0.91 m minimum walkway printed between peninsula and east run.
+    This drawing produced the "counter covered the whole middle" failure.
+    """
+    W, D = 3.2, 3.76
+    fig, ax = _canvas(W, D, "PLAN 05 | U-KITCHEN + BAR | SCALE 1:50")
+    WT = 0.12
+    _wall(ax, -WT, 0, 0, D + WT)             # west, full depth
+    _wall(ax, W, 0, W + WT, 2.36)            # east, upper part only
+    ax.plot([0, W], [0, 0], color=INK, lw=1.0, ls=(0, (6, 4)))
+    ax.text(W / 2, -0.25, "OPEN", fontsize=7.5, color=INK,
+            ha="center", family="monospace")
+    ax.plot([W, W], [2.36, D], color=INK, lw=1.0, ls=(0, (6, 4)))
+    ax.plot([0, W], [D, D], color=INK, lw=1.0, ls=(0, (6, 4)))
+
+    # west run z 0.1-2.74 (stops where the peninsula takes over), tall
+    # pantry unit drawn at the top
+    for a, b in [(0.1, 1.0), (1.0, 1.9), (1.9, 2.74)]:
+        _unit(ax, 0, a, 0.6, b)
+    ax.add_patch(Rectangle((0.03, 0.15), 0.54, 0.8, fill=False,
+                           edgecolor=INK, lw=1.6))
+    ax.text(0.3, 0.58, "TALL", fontsize=6.5, ha="center", va="center",
+            color=INK, family="monospace", rotation=90)
+
+    # east run z 0.1-2.24: double sink at 1.15, fridge (dashed) at end
+    for a, b in [(0.1, 0.8), (0.8, 1.5), (1.5, 2.24)]:
+        _unit(ax, W - 0.6, a, W, b)
+    _sink(ax, W - 0.3, 1.15, along_x=False, label_dz=0.0)
+    ax.add_patch(Rectangle((W - 0.72, 1.52), 0.7, 0.72, fill=False,
+                           edgecolor=INK, lw=1.3, ls=(0, (4, 3))))
+    ax.text(W - 0.36, 1.95, "REF.", fontsize=8, ha="center",
+            color=INK, family="monospace")
+
+    # bar peninsula x 0-1.69, z 2.74-3.76 (bottom 0.41 is the raised bar),
+    # cooktop on it, two stools south
+    ax.add_patch(Rectangle((0, 2.74), 1.69, 1.02, fill=False,
+                           edgecolor=INK, lw=1.6))
+    ax.plot([0, 1.69], [3.35, 3.35], color=INK, lw=0.9)
+    ax.text(0.84, 3.62, "BAR COUNTER", fontsize=7.5, ha="center",
+            color=INK, family="monospace")
+    for bx in (-0.24, 0.0, 0.24):
+        ax.add_patch(Circle((0.85 + bx, 2.98), 0.085, fill=False, ec=INK,
+                            lw=1.1))
+    for bx in (-0.12, 0.12):
+        ax.add_patch(Circle((0.85 + bx, 3.2), 0.085, fill=False, ec=INK,
+                            lw=1.1))
+    for cx in (0.5, 1.2):
+        ax.add_patch(Circle((cx, 4.06), 0.16, fill=False, ec=INK, lw=1.1))
+
+    # printed walkway: diagonal gap peninsula corner -> east counter corner
+    _dim(ax, 1.69, 2.74, W - 0.6, 2.24, "0.91 m min", offset=(0.18, 0.3))
+
+    _dim(ax, 0, -0.75, W, -0.75, "3.20 m")
+    _dim(ax, -0.85, 0, -0.85, D, "3.76 m", offset=(-0.25, 0), rot=90)
+    _dim(ax, W + 0.75, 0, W + 0.75, 2.24, "2.24 m", offset=(0.25, 0),
+         rot=90)
+    _dim(ax, 1.95, 2.74, 1.95, 3.76, "1.02", offset=(0.32, 0), rot=90)
+    _finish(fig, ax, W, D, OUT / "bp_ushape.png")
+    return {
+        "name": "bp_ushape",
+        "width_m": 3.2, "depth_m": 3.76,
+        "runs": [
+            {"wall": "west", "from_m": 0.1, "to_m": 2.74, "sink_at_m": None,
+             "range_at_m": None, "fridge": None},
+            {"wall": "east", "from_m": 0.1, "to_m": 2.24, "sink_at_m": 1.15,
+             "range_at_m": None, "fridge": "end"},
+        ],
+        "island": {"present": True, "x_m": 0.0, "z_m": 2.74, "w_m": 1.69,
+                   "d_m": 1.02, "seating": "south", "cooktop": True},
+        "windows": [],
+    }
+
+
 def main():
-    truths = [galley(), single_wall(), l_peninsula()]
+    truths = [galley(), single_wall(), l_peninsula(), u_peninsula()]
     (OUT / "truths.json").write_text(json.dumps(truths, indent=1))
     print(f"wrote {len(truths)} blueprints + truths.json to {OUT}")
 

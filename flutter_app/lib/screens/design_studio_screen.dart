@@ -9,13 +9,15 @@ import '../services/analytics.dart';
 import '../services/kitchen_design.dart';
 import '../services/kitchen_generator.dart';
 import '../services/plan_editor.dart';
+import '../services/plan_normalizer.dart';
 import '../theme.dart';
 import 'product_details_screen.dart';
 
-/// Design studio (v19): the generated kitchen broken into its elements.
+/// Design studio (b20): the generated kitchen broken into its elements.
 /// Two editors in one screen, IKEA-planner style:
-///  * LAYOUT - drag the sink, oven and fridge around the plan (chips snap
-///    to cabinet runs with real clearances; the elevation follows live);
+///  * LAYOUT - drag the sink, oven and fridge ANYWHERE: chips slide along
+///    cabinets live, and dropping on a bare wall creates/extends/splits
+///    runs, with the normalizer keeping every drop buildable;
 ///  * FINISHES - walls, floor, worktops, cabinets, backsplash, handles,
 ///    hardware, each swappable via swatches.
 /// "Build in 3D & AR" re-extrudes the GLB on this phone in milliseconds.
@@ -77,6 +79,9 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
   void initState() {
     super.initState();
     _design = widget.initial ?? const KitchenDesign();
+    // every plan that reaches the studio is buildable: AI misreads and
+    // old persisted plans get their overlaps/walkways fixed up front
+    normalizePlan(widget.plan);
     _editor = PlanEditor(widget.plan);
     _persist();
   }
@@ -613,41 +618,55 @@ class PlanTransform {
   (double, double) toPlan(Offset p) =>
       ((p.dx - ox) / scale, (p.dy - oy) / scale);
 
-  /// Canvas centre of the appliance symbol at coordinate [u] along run [r]
+  /// Canvas centre of the appliance symbol at coordinate [u] along wall
   /// (0.31 m out from the wall - the middle of the counter band).
-  Offset symbolCenter(RunPlan r, double u) {
-    switch (r.wall) {
+  /// b20 unified convention: u from the west end (N/S) / north end (E/W).
+  Offset wallPoint(Wall wall, double u) {
+    switch (wall) {
       case Wall.north:
         return pt(u, 0.31);
       case Wall.south:
-        return pt(w - u, d - 0.31);
+        return pt(u, d - 0.31);
       case Wall.west:
         return pt(0.31, u);
       case Wall.east:
-        return pt(w - 0.31, d - u);
+        return pt(w - 0.31, u);
     }
   }
 
-  /// For a canvas point: (u along run [r], plan-metre "cost" of how far the
-  /// point sits from the run band). Used to pick the drop target.
-  (double, double) runCoord(RunPlan r, Offset p) {
+  Offset symbolCenter(RunPlan r, double u) => wallPoint(r.wall, u);
+
+  /// For a canvas point: (u along [wall], plan-metre "cost" of how far the
+  /// point sits from that wall's counter band). Any spot on the wall is a
+  /// valid target now - runs are created/extended by the editor.
+  (double, double) wallCoord(Wall wall, Offset p) {
     final (x, z) = toPlan(p);
     double u, off;
-    switch (r.wall) {
+    switch (wall) {
       case Wall.north:
         u = x;
         off = z - 0.31;
       case Wall.south:
-        u = w - x;
+        u = x;
         off = (d - 0.31) - z;
       case Wall.west:
         u = z;
         off = x - 0.31;
       case Wall.east:
-        u = d - z;
+        u = z;
         off = (w - 0.31) - x;
     }
     var cost = math.max(0.0, off.abs() - 0.31);
+    // walking off the wall's ends costs too
+    final m = (wall == Wall.north || wall == Wall.south) ? w : d;
+    if (u < 0) cost += -u;
+    if (u > m) cost += u - m;
+    return (u, cost);
+  }
+
+  /// (u along run [r], cost) - wall distance plus run-extent overshoot.
+  (double, double) runCoord(RunPlan r, Offset p) {
+    var (u, cost) = wallCoord(r.wall, p);
     if (u < r.a) cost += r.a - u;
     if (u > r.b) cost += u - r.b;
     return (u, cost);
@@ -689,6 +708,12 @@ class _InteractivePlanState extends State<_InteractivePlan> {
   ApplianceKind? _dragging;
   Size _size = Size.zero;
 
+  // live drop target under the finger (any wall - b20 free placement)
+  Wall? _targetWall;
+  double _targetU = 0;
+  bool _targetValid = false;
+  Offset? _ghost; // chip follows the finger when off existing cabinets
+
   ApplianceKind? _hitChip(Offset p) {
     final t = PlanTransform(widget.plan, _size);
     ApplianceKind? best;
@@ -716,30 +741,59 @@ class _InteractivePlanState extends State<_InteractivePlan> {
     if (kind == null) return;
     final t = PlanTransform(widget.plan, _size);
 
-    // nearest run to the finger
-    RunPlan? target;
+    // nearest wall to the finger - ANY spot on a wall is a target now
+    Wall? wall;
     var bestCost = 0.75; // metres - beyond this the drop is ignored
     var bestU = 0.0;
-    for (final r in widget.plan.runs) {
-      final (u, cost) = t.runCoord(r, details.localPosition);
+    for (final w in Wall.values) {
+      final (u, cost) = t.wallCoord(w, details.localPosition);
       if (cost < bestCost) {
-        target = r;
+        wall = w;
         bestCost = cost;
         bestU = u;
       }
     }
-    if (target == null) return;
+    _targetWall = wall;
+    _targetU = bestU;
+    _targetValid = wall != null;
 
-    final ok = kind == ApplianceKind.fridge
-        ? widget.editor.moveFridge(target, bestU)
-        : widget.editor.moveAppliance(kind, target, bestU);
-    if (ok) setState(() {});
+    // live-move while the drop stays on existing cabinets (cheap and
+    // reversible); structural edits (new/extended/split runs) happen once,
+    // on release, so a drag never litters the plan with fragments.
+    var applied = false;
+    if (wall != null) {
+      for (final r in widget.plan.runs) {
+        if (r.wall != wall || bestU < r.a - 0.05 || bestU > r.b + 0.05) {
+          continue;
+        }
+        if (kind == ApplianceKind.fridge) {
+          final nearEnd = (bestU - r.a) < PlanEditor.endSnap ||
+              (r.b - bestU) < PlanEditor.endSnap;
+          if (nearEnd) applied = widget.editor.moveFridge(r, bestU);
+        } else {
+          applied = widget.editor.moveAppliance(kind, r, bestU);
+        }
+        break;
+      }
+    }
+    setState(() {
+      _ghost = applied ? null : details.localPosition;
+    });
   }
 
   void _onEnd(DragEndDetails details) {
     final kind = _dragging;
     if (kind == null) return;
-    setState(() => _dragging = null);
+    final wall = _targetWall;
+    if (_targetValid && wall != null) {
+      // the structural drop: creates/extends/splits runs + normalizes
+      widget.editor.place(kind, wall, _targetU);
+    }
+    setState(() {
+      _dragging = null;
+      _ghost = null;
+      _targetValid = false;
+    });
     widget.onEdited('move_${kind.name}');
   }
 
@@ -771,6 +825,9 @@ class _InteractivePlanState extends State<_InteractivePlan> {
                 widget.editor.revision,
                 editor: widget.editor,
                 dragging: _dragging,
+                ghost: _ghost,
+                ghostWall: _targetValid ? _targetWall : null,
+                ghostU: _targetU,
               ),
             ),
           );
@@ -1027,13 +1084,19 @@ class KitchenElevationPainter extends CustomPainter {
 /// plus the round S/O/F drag chips when an [editor] is attached.
 class KitchenPlanPainter extends CustomPainter {
   KitchenPlanPainter(this.plan, this.design, this.revision,
-      {this.editor, this.dragging});
+      {this.editor, this.dragging, this.ghost, this.ghostWall, this.ghostU = 0});
 
   final LayoutPlan plan;
   final KitchenDesign design;
   final int revision;
   final PlanEditor? editor;
   final ApplianceKind? dragging;
+
+  /// While a drag hovers over empty floor/bare wall the chip follows the
+  /// finger ([ghost]) and the label previews the landing wall+position.
+  final Offset? ghost;
+  final Wall? ghostWall;
+  final double ghostU;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1064,17 +1127,18 @@ class KitchenPlanPainter extends CustomPainter {
     canvas.drawRect(rc(0, 0, w, d), wallPaint);
 
     // runs: counter band along the wall, worktop color with cabinet edge
+    // (b20 unified convention: u from west end on N/S, north end on E/W)
     for (final r in plan.runs) {
       Rect runRect;
       switch (r.wall) {
         case Wall.north:
           runRect = rc(r.a, 0, r.b, 0.62);
         case Wall.south:
-          runRect = rc(w - r.b, d - 0.62, w - r.a, d);
+          runRect = rc(r.a, d - 0.62, r.b, d);
         case Wall.west:
           runRect = rc(0, r.a, 0.62, r.b);
         case Wall.east:
-          runRect = rc(w - 0.62, d - r.b, w, d - r.a);
+          runRect = rc(w - 0.62, r.a, w, r.b);
       }
       fill(runRect, worktop);
       canvas.drawRect(
@@ -1091,11 +1155,11 @@ class KitchenPlanPainter extends CustomPainter {
           case Wall.north:
             s = rc(u - halfW, 0.06, u + halfW, 0.56);
           case Wall.south:
-            s = rc(w - u - halfW, d - 0.56, w - u + halfW, d - 0.06);
+            s = rc(u - halfW, d - 0.56, u + halfW, d - 0.06);
           case Wall.west:
             s = rc(0.06, u - halfW, 0.56, u + halfW);
           case Wall.east:
-            s = rc(w - 0.56, d - u - halfW, w, d - u + halfW);
+            s = rc(w - 0.56, u - halfW, w, u + halfW);
         }
         fill(s.deflate(1), c);
       }
@@ -1116,11 +1180,11 @@ class KitchenPlanPainter extends CustomPainter {
         case Wall.north:
           canvas.drawLine(t.pt(wa, 0), t.pt(wb, 0), p);
         case Wall.south:
-          canvas.drawLine(t.pt(w - wb, d), t.pt(w - wa, d), p);
+          canvas.drawLine(t.pt(wa, d), t.pt(wb, d), p);
         case Wall.west:
           canvas.drawLine(t.pt(0, wa), t.pt(0, wb), p);
         case Wall.east:
-          canvas.drawLine(t.pt(w, d - wb), t.pt(w, d - wa), p);
+          canvas.drawLine(t.pt(w, wa), t.pt(w, wb), p);
       }
     }
 
@@ -1154,10 +1218,33 @@ class KitchenPlanPainter extends CustomPainter {
       ApplianceKind.range: 'O',
       ApplianceKind.fridge: 'F',
     };
+    void chipLabel(Offset c, double radius, String label) {
+      final lp = TextPainter(
+        text: TextSpan(
+          text: label,
+          style: const TextStyle(
+              color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final pos = Offset(
+        (c.dx - lp.width / 2)
+            .clamp(4.0, size.width - lp.width - 4)
+            .toDouble(),
+        (c.dy - radius - 24).clamp(4.0, size.height - 18).toDouble(),
+      );
+      final bg =
+          Rect.fromLTWH(pos.dx - 6, pos.dy - 4, lp.width + 12, lp.height + 8);
+      canvas.drawRRect(RRect.fromRectAndRadius(bg, const Radius.circular(6)),
+          Paint()..color = Baytak.ink.withValues(alpha: 0.85));
+      lp.paint(canvas, pos);
+    }
+
     for (final kind in ApplianceKind.values) {
-      final c = t.chipCenter(ed, kind);
-      if (c == null) continue;
       final active = dragging == kind;
+      // while hovering off the cabinets the chip follows the finger
+      final c = active && ghost != null ? ghost! : t.chipCenter(ed, kind);
+      if (c == null) continue;
       final radius = active ? 17.0 : 14.0;
       canvas.drawCircle(
           c,
@@ -1182,34 +1269,17 @@ class KitchenPlanPainter extends CustomPainter {
       tp.paint(canvas, c - Offset(tp.width / 2, tp.height / 2));
 
       // position readout while dragging
-      if (active && kind != ApplianceKind.fridge) {
+      if (!active) continue;
+      if (ghost != null && ghostWall != null) {
+        // previewing a free drop: cabinets will be added/adjusted here
+        chipLabel(c, radius,
+            '${ghostU.toStringAsFixed(2)} m on the ${ghostWall!.name} wall');
+      } else if (kind != ApplianceKind.fridge) {
         final u = ed.positionOf(kind);
         final r = ed.runWith(kind);
         if (u != null && r != null) {
-          final label =
-              '${(u - r.a).toStringAsFixed(2)} m from ${r.wall.name} run start';
-          final lp = TextPainter(
-            text: TextSpan(
-              text: label,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
-          final pos = Offset(
-            (c.dx - lp.width / 2)
-                .clamp(4.0, size.width - lp.width - 4)
-                .toDouble(),
-            (c.dy - radius - 24).clamp(4.0, size.height - 18).toDouble(),
-          );
-          final bg = Rect.fromLTWH(
-              pos.dx - 6, pos.dy - 4, lp.width + 12, lp.height + 8);
-          canvas.drawRRect(
-              RRect.fromRectAndRadius(bg, const Radius.circular(6)),
-              Paint()..color = Baytak.ink.withValues(alpha: 0.85));
-          lp.paint(canvas, pos);
+          chipLabel(c, radius,
+              '${(u - r.a).toStringAsFixed(2)} m from ${r.wall.name} run start');
         }
       }
     }
@@ -1220,5 +1290,6 @@ class KitchenPlanPainter extends CustomPainter {
       old.design != design ||
       old.plan != plan ||
       old.revision != revision ||
-      old.dragging != dragging;
+      old.dragging != dragging ||
+      old.ghost != ghost;
 }

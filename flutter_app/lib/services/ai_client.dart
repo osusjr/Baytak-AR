@@ -41,6 +41,18 @@ const aiGeminiModels = [
   'gemini-2.5-flash',
 ];
 
+/// TEXT reasoning models for stage 2 of the two-stage blueprint pipeline
+/// (vision model describes the drawing, one of these turns the
+/// description into the strict plan JSON). Benchmark-ranked on the same
+/// four ground-truth blueprints (tools/bench/bench_two_stage.py):
+/// mistral-large-3 and deepseek-v4-pro both converted every description
+/// without a failure (avg 90.9); mistral is ~3x faster (7-22 s).
+const aiTextModels = [
+  'mistralai/mistral-large-3-675b-instruct-2512', // fast + zero failures
+  'deepseek-ai/deepseek-v4-pro', // equally reliable, slower
+  'nvidia/nemotron-3-super-120b-a12b', // strong when it answers
+];
+
 const _nvidiaEndpoint =
     'https://integrate.api.nvidia.com/v1/chat/completions';
 const _geminiEndpoint =
@@ -75,14 +87,16 @@ Future<String> _resolveKey(String define, String prefsKey) async {
   }
 }
 
-Future<List<_Candidate>> _candidates() async {
+Future<List<_Candidate>> _candidates({bool text = false}) async {
   final nvidia =
       await _resolveKey(DemoConfig.nvidiaApiKey, 'cfg_nvidia_key');
   final gemini =
       await _resolveKey(DemoConfig.geminiApiKey, 'cfg_gemini_key');
+  final nvidiaModels = text ? aiTextModels : aiVisionModels;
   return [
     if (nvidia.isNotEmpty)
-      for (final m in aiVisionModels) _Candidate(_nvidiaEndpoint, nvidia, m),
+      for (final m in nvidiaModels) _Candidate(_nvidiaEndpoint, nvidia, m),
+    // Gemini Flash handles both modalities - same chain either way
     if (gemini.isNotEmpty)
       for (final m in aiGeminiModels) _Candidate(_geminiEndpoint, gemini, m),
   ];
@@ -206,7 +220,46 @@ Future<String> visionCall({
 
   final (prepared, mime) = await _prepareImage(imageBytes, mediaType);
   final dataUri = 'data:$mime;base64,${base64Encode(prepared)}';
+  return _chatCall(
+    candidates,
+    (model) => [
+      {
+        'role': 'user',
+        'content': [
+          {'type': 'text', 'text': prompt},
+          {
+            'type': 'image_url',
+            'image_url': {'url': dataUri},
+          },
+        ],
+      }
+    ],
+    maxTokens: maxTokens,
+  );
+}
 
+/// Text-only call against the reasoning chain (stage 2 of the blueprint
+/// pipeline). Same fallback behaviour as [visionCall].
+Future<String> textCall({
+  required String prompt,
+  int maxTokens = 8192,
+}) async {
+  final candidates = await _candidates(text: true);
+  if (candidates.isEmpty) throw AiClientException(aiNotConfiguredMessage);
+  return _chatCall(
+    candidates,
+    (model) => [
+      {'role': 'user', 'content': prompt}
+    ],
+    maxTokens: maxTokens,
+  );
+}
+
+Future<String> _chatCall(
+  List<_Candidate> candidates,
+  List<Map<String, dynamic>> Function(String model) messagesFor, {
+  required int maxTokens,
+}) async {
   // Every failure mode falls through to the next candidate: retired ids
   // (404), hung free-tier models (timeout - observed live), rate limits,
   // even a revoked key when a second provider is configured. Stop trying
@@ -219,21 +272,13 @@ Future<String> visionCall({
     if (clock.elapsed > const Duration(seconds: 150)) break;
     final body = jsonEncode({
       'model': c.model,
-      // qwen thinks before answering - give it output headroom
-      'max_tokens': c.model.startsWith('qwen/') ? 8192 : maxTokens,
+      // reasoning models think before answering - give them headroom
+      'max_tokens':
+          c.model.startsWith('qwen/') || c.model.startsWith('deepseek')
+              ? 8192
+              : maxTokens,
       'temperature': 0.2,
-      'messages': [
-        {
-          'role': 'user',
-          'content': [
-            {'type': 'text', 'text': prompt},
-            {
-              'type': 'image_url',
-              'image_url': {'url': dataUri},
-            },
-          ],
-        }
-      ],
+      'messages': messagesFor(c.model),
     });
     http.Response attempt;
     try {
@@ -274,7 +319,7 @@ Future<String> visionCall({
           'Free-tier rate limit reached. Wait a minute and try again.');
     }
     throw AiClientException(
-        'None of the free vision models answered - they may be busy, or '
+        'None of the free AI models answered - they may be busy, or '
         'the internet connection is down. Try again in a moment.\n\n'
         'Last error: $lastError');
   }
@@ -296,7 +341,7 @@ Future<String> visionCall({
     final message = first['message'] as Map;
     final content = message['content'];
     // content is a plain string on this API; tolerate part-lists anyway
-    final text = content is String
+    var text = content is String
         ? content
         : content is List
             ? content
@@ -304,6 +349,10 @@ Future<String> visionCall({
                     p is Map && p['text'] != null ? '${p['text']}' : '')
                 .join()
             : '';
+    if (text.trim().isEmpty) {
+      // some reasoning models answer in reasoning_content instead
+      text = '${message['reasoning_content'] ?? ''}';
+    }
     if (text.trim().isEmpty) {
       throw AiClientException(
           'The model returned an empty answer - try again.');
