@@ -119,14 +119,24 @@ Surveyor's description:
 """
 
 
+OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
+
+
 def call_api(model, key, messages, max_tokens=4096, timeout=75):
-    body = json.dumps({
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": 0.2,
-        "messages": messages,
-    }).encode()
-    req = urllib.request.Request(ENDPOINT, data=body, method="POST")
+    # gpt-* models route to OpenAI (OPENAI_API_KEY); GPT-5.x wants
+    # max_completion_tokens and rejects non-default temperature
+    openai = model.startswith("gpt-")
+    if openai:
+        key = os.environ.get("OPENAI_API_KEY", key)
+    payload = {"model": model, "messages": messages}
+    if openai:
+        payload["max_completion_tokens"] = 16384
+    else:
+        payload["max_tokens"] = max_tokens
+        payload["temperature"] = 0.2
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(OPENAI_ENDPOINT if openai else ENDPOINT,
+                                 data=body, method="POST")
     req.add_header("Authorization", f"Bearer {key}")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")

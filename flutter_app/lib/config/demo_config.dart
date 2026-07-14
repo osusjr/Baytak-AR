@@ -24,6 +24,15 @@ class DemoConfig {
   static const nvidiaApiKey =
       String.fromEnvironment('NVIDIA_API_KEY', defaultValue: '');
 
+  /// Optional PAID provider (platform.openai.com, pay-as-you-go - no
+  /// subscription): when set, OpenAI goes FIRST in both AI chains and the
+  /// free models become the fallback. OPENAI_MODEL picks the tier
+  /// (gpt-5.6-sol flagship / gpt-5.6-terra / gpt-5.6-luna budget).
+  static const openaiApiKey =
+      String.fromEnvironment('OPENAI_API_KEY', defaultValue: '');
+  static const openaiModel = String.fromEnvironment('OPENAI_MODEL',
+      defaultValue: 'gpt-5.6-sol');
+
   /// Optional second FREE provider (aistudio.google.com key, no card):
   /// adds Gemini Flash to the vision fallback chain for extra reliability.
   static const geminiApiKey =

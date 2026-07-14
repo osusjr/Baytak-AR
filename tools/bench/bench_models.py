@@ -148,11 +148,18 @@ def extract_json(text):
     return t[start:]
 
 
+OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
+
+
 def call(model, key, img_b64, timeout=75):
-    body = json.dumps({
+    # gpt-* models route to OpenAI (OPENAI_API_KEY): pay-as-you-go quality
+    # check against the free chain. GPT-5.x wants max_completion_tokens
+    # and rejects non-default temperature.
+    openai = model.startswith("gpt-")
+    if openai:
+        key = os.environ.get("OPENAI_API_KEY", key)
+    payload = {
         "model": model,
-        "max_tokens": 4096,
-        "temperature": 0.2,
         "messages": [{
             "role": "user",
             "content": [
@@ -161,8 +168,15 @@ def call(model, key, img_b64, timeout=75):
                  "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
             ],
         }],
-    }).encode()
-    req = urllib.request.Request(ENDPOINT, data=body, method="POST")
+    }
+    if openai:
+        payload["max_completion_tokens"] = 16384
+    else:
+        payload["max_tokens"] = 4096
+        payload["temperature"] = 0.2
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(OPENAI_ENDPOINT if openai else ENDPOINT,
+                                 data=body, method="POST")
     req.add_header("Authorization", f"Bearer {key}")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
