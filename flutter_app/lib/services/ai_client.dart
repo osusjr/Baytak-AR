@@ -119,6 +119,32 @@ Future<List<_Candidate>> _candidates({bool text = false}) async {
 /// Whether AI features can run on this build (any provider key present).
 Future<bool> aiConfigured() async => (await _candidates()).isNotEmpty;
 
+/// Human-readable name of the provider that will answer FIRST, for the
+/// screens' captions ("Runs on ..."). Never hardcode a provider name in
+/// UI text - builds differ.
+Future<String> aiProviderLabel() async {
+  final c = await _candidates();
+  if (c.isEmpty) return 'no AI configured';
+  return _friendlyModel(c.first.model, c.first.endpoint);
+}
+
+/// The model that actually produced the last successful answer, e.g.
+/// "GPT-5.6 Sol (OpenAI)" - shown after each analysis so nobody has to
+/// guess which provider served it (and whether the paid key worked).
+String? aiLastAnsweredBy;
+
+String _friendlyModel(String model, String endpoint) {
+  if (endpoint == _openaiEndpoint) {
+    final tier = model.replaceFirst('gpt-', 'GPT-').split('-').map((p) {
+      return p.isEmpty ? p : '${p[0].toUpperCase()}${p.substring(1)}';
+    }).join(' ');
+    return '$tier (OpenAI, paid)';
+  }
+  if (endpoint == _geminiEndpoint) return '$model (Google)';
+  final short = model.split('/').last;
+  return '$short (NVIDIA, free)';
+}
+
 const aiNotConfiguredMessage =
     'AI analysis is not configured on this build. Add a key at build time '
     '(--dart-define=OPENAI_API_KEY=... for paid GPT-5.6, or a free '
@@ -279,6 +305,7 @@ Future<String> _chatCall(
   // even a revoked key when a second provider is configured. Stop trying
   // once the total budget is spent so the UI never waits forever.
   http.Response? ok;
+  _Candidate? okBy;
   http.Response? lastResp;
   Object? lastError;
   final clock = Stopwatch()..start();
@@ -314,6 +341,7 @@ Future<String> _chatCall(
     }
     if (attempt.statusCode == 200) {
       ok = attempt;
+      okBy = c;
       break;
     }
     lastResp = attempt;
@@ -373,6 +401,9 @@ Future<String> _chatCall(
     if (text.trim().isEmpty) {
       throw AiClientException(
           'The model returned an empty answer - try again.');
+    }
+    if (okBy != null) {
+      aiLastAnsweredBy = _friendlyModel(okBy.model, okBy.endpoint);
     }
     return text;
   } on AiClientException {
