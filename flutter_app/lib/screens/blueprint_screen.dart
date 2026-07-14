@@ -330,7 +330,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('BLUEPRINT STUDIO v17 - RENDER OK',
+          Text('BLUEPRINT STUDIO v18 - RENDER OK',
               style: text.labelSmall?.copyWith(
                   color: Baytak.olive, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),

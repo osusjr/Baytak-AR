@@ -20,7 +20,7 @@ void main() {
     await tester.pumpWidget(BaytakArApp(state: AppState(prefs)));
     await tester.pump();
     expect(find.text('Baytak'), findsOneWidget);
-    expect(find.text('AR · v17'), findsOneWidget);
+    expect(find.text('AR · v18'), findsOneWidget);
   });
 
   test('LayoutPlan JSON round-trips through toJson/fromJson', () {

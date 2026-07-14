@@ -46,7 +46,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('DETAILS v17 - RENDER OK',
+          Text('DETAILS v18 - RENDER OK',
               style: text.labelSmall?.copyWith(
                   color: Baytak.olive, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),

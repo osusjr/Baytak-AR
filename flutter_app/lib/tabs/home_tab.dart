@@ -35,7 +35,7 @@ class HomeTab extends StatelessWidget {
                       style: text.titleSmall?.copyWith(
                           color: Baytak.olive, fontWeight: FontWeight.w700)),
                   const Spacer(),
-                  Text('AR · v17', style: Baytak.mono(color: Baytak.brass)),
+                  Text('AR · v18', style: Baytak.mono(color: Baytak.brass)),
                 ],
               ),
             ),

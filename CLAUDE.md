@@ -2,7 +2,7 @@
 
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
-Home Centre, THE One). Investor-grade demo, currently at v17.
+Home Centre, THE One). Investor-grade demo, currently at v18.
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
