@@ -1,0 +1,6 @@
+# root-level junk (flutter_app/.gitignore covers the app's build output)
+*.zip
+runlog*.txt
+*.log
+.DS_Store
+Thumbs.db
