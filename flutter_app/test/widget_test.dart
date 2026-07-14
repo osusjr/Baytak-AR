@@ -8,6 +8,7 @@ import 'package:baytak_ar/services/ai_client.dart';
 import 'package:baytak_ar/services/kitchen_design.dart';
 import 'package:baytak_ar/services/kitchen_generator.dart';
 import 'package:baytak_ar/services/plan_editor.dart';
+import 'package:baytak_ar/services/plan_normalizer.dart';
 import 'package:baytak_ar/state/app_state.dart';
 import 'package:baytak_ar/theme.dart';
 
@@ -153,6 +154,151 @@ void main() {
       final ed = PlanEditor(plan);
       expect(ed.moveFridge(plan.runs.first, 0.6), isFalse);
       expect(plan.runs.first.fridge, isNull);
+    });
+  });
+
+  group('PlanNormalizer (b20)', () {
+    // the owner's real U-shape blueprint: two side runs + a bar peninsula
+    LayoutPlan ushape({IslandPlan? island}) => LayoutPlan(
+          widthM: 3.2,
+          depthM: 3.76,
+          runs: [
+            RunPlan(wall: Wall.west, a: 0.1, b: 2.74, uppers: true),
+            RunPlan(
+                wall: Wall.east,
+                a: 0.1,
+                b: 2.24,
+                sinkAt: 1.15,
+                fridge: 'end',
+                uppers: true),
+          ],
+          island: island ??
+              IslandPlan(
+                  x0: 0.0, z0: 2.74, w: 1.69, d: 1.02, cooktop: true),
+        );
+
+    test('a true peninsula survives normalization untouched', () {
+      final plan = ushape();
+      normalizePlan(plan);
+      final isl = plan.island!;
+      expect(isl.w, closeTo(1.69, 0.02));
+      expect(isl.d, closeTo(1.02, 0.02));
+      expect(plan.runs.length, 2);
+    });
+
+    test('a room-filling island is shrunk until the walkway is clear', () {
+      final plan = ushape(
+          island:
+              IslandPlan(x0: 0.4, z0: 0.6, w: 2.4, d: 2.56, cooktop: true));
+      normalizePlan(plan);
+      final isl = plan.island;
+      if (isl != null) {
+        // east run front is at x = 3.2 - 0.75 (fridge depth); whatever
+        // survives must leave a walkway to it
+        expect(isl.x0 + isl.w,
+            lessThanOrEqualTo(3.2 - 0.75 - PlanNormalizer.walkway + 1e-6));
+      }
+    });
+
+    test('a perpendicular run is trimmed clear of the fridge', () {
+      final plan = LayoutPlan(
+        widthM: 4.2,
+        depthM: 3.4,
+        runs: [
+          RunPlan(
+              wall: Wall.north,
+              a: 0.1,
+              b: 4.1,
+              sinkAt: 1.2,
+              rangeAt: 3.0,
+              fridge: 'start',
+              uppers: true),
+          RunPlan(wall: Wall.west, a: 0.1, b: 3.3, uppers: true),
+        ],
+      );
+      normalizePlan(plan);
+      final west = plan.runs.firstWhere((r) => r.wall == Wall.west);
+      expect(west.a, greaterThanOrEqualTo(PlanNormalizer.clearFridge - 1e-9));
+    });
+
+    test('four content walls cap at three built walls', () {
+      final plan = LayoutPlan(
+        widthM: 3.6,
+        depthM: 3.0,
+        runs: [
+          RunPlan(wall: Wall.north, a: 0.1, b: 3.5, uppers: true),
+          RunPlan(wall: Wall.south, a: 0.1, b: 3.5),
+          RunPlan(wall: Wall.east, a: 0.1, b: 2.9, fridge: 'start'),
+          RunPlan(wall: Wall.west, a: 0.1, b: 2.9),
+        ],
+      );
+      normalizePlan(plan);
+      expect(planWalls(plan).length, 3);
+    });
+  });
+
+  group('PlanEditor free placement (b20)', () {
+    LayoutPlan lShape() => const KitchenSpec(
+          widthM: 4.2,
+          depthM: 3.4,
+          layout: KitchenLayout.lShape,
+          island: false,
+        ).toPlan();
+
+    test('sink dropped on a bare wall grows a new cabinet run', () {
+      final plan = lShape();
+      final ed = PlanEditor(plan);
+      expect(plan.runs.any((r) => r.wall == Wall.east), isFalse);
+      final ok = ed.place(ApplianceKind.sink, Wall.east, 1.7);
+      expect(ok, isTrue);
+      final east = plan.runs.firstWhere((r) => r.wall == Wall.east);
+      expect(east.sinkAt, isNotNull);
+      expect(east.length, greaterThanOrEqualTo(PlanEditor.newRunLen - 0.01));
+      // the north run's sink is gone - only one sink in a kitchen
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      expect(north.sinkAt, isNull);
+    });
+
+    test('fridge dropped mid-run splits the cabinets around it', () {
+      final plan = LayoutPlan(
+        widthM: 5.4,
+        depthM: 3.2,
+        runs: [
+          RunPlan(wall: Wall.north, a: 0.1, b: 5.3, uppers: true),
+        ],
+      );
+      final ed = PlanEditor(plan);
+      final ok = ed.place(ApplianceKind.fridge, Wall.north, 2.7);
+      expect(ok, isTrue);
+      final north = plan.runs.where((r) => r.wall == Wall.north).toList();
+      expect(north.length, 2);
+      expect(north.any((r) => r.fridge != null), isTrue);
+      // the two pieces do not overlap
+      north.sort((a, b) => a.a.compareTo(b.a));
+      expect(north[0].b, lessThanOrEqualTo(north[1].a + 1e-9));
+    });
+
+    test('fridge dropped on a bare wall becomes freestanding', () {
+      final plan = lShape();
+      final ed = PlanEditor(plan);
+      final ok = ed.place(ApplianceKind.fridge, Wall.east, 2.0);
+      expect(ok, isTrue);
+      final east = plan.runs.firstWhere((r) => r.wall == Wall.east);
+      expect(east.fridge, isNotNull);
+      expect(east.length, closeTo(PlanEditor.fridgeSpan, 0.01));
+      // the west run no longer holds the fridge
+      final west = plan.runs.where((r) => r.wall == Wall.west);
+      expect(west.every((r) => r.fridge == null), isTrue);
+    });
+
+    test('fridge-only runs survive a JSON round-trip', () {
+      final plan = lShape();
+      PlanEditor(plan).place(ApplianceKind.fridge, Wall.east, 2.0);
+      final round = LayoutPlan.fromJson(plan.toJson());
+      expect(
+          round.runs.any(
+              (r) => r.wall == Wall.east && r.fridge != null),
+          isTrue);
     });
   });
 

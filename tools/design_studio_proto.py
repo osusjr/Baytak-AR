@@ -272,13 +272,17 @@ class Frame:
         self.wall, self.w, self.d = wall, w, d
 
     def pt(self, u, y, v):
+        # b20: ONE u-origin convention everywhere, matching the AI schema -
+        # u measured from the WEST end on north/south walls and from the
+        # NORTH end on east/west walls. (Pre-b20 south/east frames counted
+        # from the opposite end, silently mirroring AI-read appliances.)
         if self.wall == "north":
             return (u, y, v)
         if self.wall == "south":
-            return (self.w - u, y, self.d - v)
+            return (u, y, self.d - v)
         if self.wall == "west":
             return (v, y, u)
-        return (self.w - v, y, self.d - u)  # east
+        return (self.w - v, y, u)  # east
 
     def box(self, s, u0, u1, y0, y1, v0, v1, mat):
         p1, p2 = self.pt(u0, 0, v0), self.pt(u1, 0, v1)
@@ -324,7 +328,8 @@ def door_front(f, s, u0, u1, y0, y1, v_back, v_face, mat, style):
 
 
 # --- run builder: mirror of Dart _buildRun + design hooks ------------------
-def build_run(s, f, r, windows, handle_style="bar", door_style="slab"):
+def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
+              draw_windows=True):
     a, b = r["a"], r["b"]
 
     if r.get("fridge") == "start":
@@ -370,15 +375,16 @@ def build_run(s, f, r, windows, handle_style="bar", door_style="slab"):
         f.box(s, rc - 0.43, rc + 0.43, 1.42, 1.52, 0.02, 0.53, "steel")
         f.box(s, rc - 0.21, rc + 0.21, 1.52, HCEIL, 0.06, 0.34, "steel")
 
-    for win in windows:
-        if win["wall"] != r["wall"]:
-            continue
-        wa, wb = win["center"] - win["width"] / 2, win["center"] + win["width"] / 2
-        f.box(s, wa, wb, 1.00, 1.90, -0.015, 0.005, "glass")
-        f.box(s, wa - 0.05, wa, 0.95, 1.95, -0.02, 0.02, "frame")
-        f.box(s, wb, wb + 0.05, 0.95, 1.95, -0.02, 0.02, "frame")
-        f.box(s, wa - 0.05, wb + 0.05, 0.95, 1.00, -0.02, 0.02, "frame")
-        f.box(s, wa - 0.05, wb + 0.05, 1.90, 1.95, -0.02, 0.02, "frame")
+    if draw_windows:
+        for win in windows:
+            if win["wall"] != r["wall"]:
+                continue
+            wa, wb = win["center"] - win["width"] / 2, win["center"] + win["width"] / 2
+            f.box(s, wa, wb, 1.00, 1.90, -0.015, 0.005, "glass")
+            f.box(s, wa - 0.05, wa, 0.95, 1.95, -0.02, 0.02, "frame")
+            f.box(s, wb, wb + 0.05, 0.95, 1.95, -0.02, 0.02, "frame")
+            f.box(s, wa - 0.05, wb + 0.05, 0.95, 1.00, -0.02, 0.02, "frame")
+            f.box(s, wa - 0.05, wb + 0.05, 1.90, 1.95, -0.02, 0.02, "frame")
 
     if r.get("uppers"):
         skip = []
@@ -473,6 +479,62 @@ def build_plan(plan, d):
     for r in plan["runs"]:
         build_run(s, Frame(r["wall"], w, dp), r, plan.get("windows", []),
                   handle_style=d["handle"], door_style=d["door"])
+    if plan.get("island"):
+        build_island(s, plan["island"], w, dp)
+    return s
+
+
+# --- b20: open room + capped walls + windows drawn per BUILT wall ----------
+def plan_walls(plan):
+    """Walls hosting runs/windows, capped at 3 (lowest content left open) -
+    the generated room is a showroom vignette, never a closed box."""
+    score = {}
+    for r in plan["runs"]:
+        score[r["wall"]] = score.get(r["wall"], 0) + 2 * (r["b"] - r["a"])
+    for win in plan.get("windows", []):
+        score[win["wall"]] = score.get(win["wall"], 0) + win["width"]
+    walls = set(score)
+    if len(walls) == 4:
+        walls.remove(min(score, key=score.get))
+    return walls
+
+
+def draw_wall_windows(s, f, windows):
+    """Window glass+frame boxes in the wall plane (was inside build_run;
+    b20 draws them once per BUILT wall so open walls get no floating glass
+    and double runs no longer double-draw)."""
+    for win in windows:
+        if win["wall"] != f.wall:
+            continue
+        wa = win["center"] - win["width"] / 2
+        wb = win["center"] + win["width"] / 2
+        f.box(s, wa, wb, 1.00, 1.90, -0.015, 0.005, "glass")
+        f.box(s, wa - 0.05, wa, 0.95, 1.95, -0.02, 0.02, "frame")
+        f.box(s, wb, wb + 0.05, 0.95, 1.95, -0.02, 0.02, "frame")
+        f.box(s, wa - 0.05, wb + 0.05, 0.95, 1.00, -0.02, 0.02, "frame")
+        f.box(s, wa - 0.05, wb + 0.05, 1.90, 1.95, -0.02, 0.02, "frame")
+
+
+def build_plan_b20(plan, d):
+    s = Scene()
+    w, dp = plan["w"], plan["d"]
+    s.box(0, -0.05, 0, w, 0.0, dp, "floor")
+    walls = plan_walls(plan)
+    if "north" in walls:
+        s.box(0, 0, -WALLT, w, HCEIL, 0, "wall")
+    if "south" in walls:
+        s.box(0, 0, dp, w, HCEIL, dp + WALLT, "wall")
+    if "west" in walls:
+        s.box(-WALLT, 0, 0, 0, HCEIL, dp, "wall")
+    if "east" in walls:
+        s.box(w, 0, 0, w + WALLT, HCEIL, dp, "wall")
+    wins = plan.get("windows", [])
+    for r in plan["runs"]:
+        build_run(s, Frame(r["wall"], w, dp), r, wins,
+                  handle_style=d["handle"], door_style=d["door"],
+                  draw_windows=False)
+    for wl in walls:
+        draw_wall_windows(s, Frame(wl, w, dp), wins)
     if plan.get("island"):
         build_island(s, plan["island"], w, dp)
     return s

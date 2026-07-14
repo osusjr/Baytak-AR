@@ -38,10 +38,29 @@ MODELS = [
     "meta/llama-3.2-90b-vision-instruct",
 ]
 
-# EXACT copy of the app's prompt (lib/services/blueprint_ai.dart _prompt)
+# EXACT copy of the app's single-call fallback prompt
+# (lib/services/blueprint_ai.dart _singlePrompt, b20)
+SENSES = """
+Distinguish carefully:
+- A TALL or PANTRY unit is NOT a fridge. Only report a fridge where the
+  drawing marks REF/FRIDGE or draws the dashed appliance box.
+- A counter attached to a run or wall but extending into the room (bar,
+  peninsula) is NEVER a wall run - it is the "island" object. Runs hug
+  walls only.
+- Edges drawn dashed/open are openings to other rooms - NOT walls; never
+  put a run or window on them.
+- w_m is always the x-extent (left-right on the drawing) and d_m the
+  z-extent (top-bottom), for the room AND for the island."""
+
 PROMPT = """
 You are a kitchen floor-plan reader. Analyze the attached blueprint image
 and return the kitchen layout as JSON ONLY - no prose, no markdown fences.
+
+IMPORTANT: measure THIS drawing. Kitchens vary a lot - galley (two facing
+runs), single wall, L-shape, U-shape, with or without an island. Report
+only what is actually drawn; never copy the example numbers from the
+schema, and never invent appliances or runs that are not in the image.
+""" + SENSES + """
 
 Coordinate system: looking at the drawing, origin is the TOP-LEFT inside
 corner of the room. x runs right (metres), z runs down (metres).
@@ -50,12 +69,13 @@ Positions along north/south walls are x metres; along east/west walls are
 z metres, both measured from that wall's origin end (west end for N/S,
 north end for E/W).
 
-Read printed dimensions when present (convert feet/inches to metres);
-otherwise estimate from scale. Cabinet runs are the counter rectangles
-against walls. Mark sink_at_m / range_at_m with the centre position of the
-basin / cooktop ON that run, or null. A freestanding or peninsula counter
-(bar) is the "island"; if the cooktop sits on it, set cooktop true, and
-set seating to the side where stools/overhang are drawn. x_m,z_m are the
+Use the printed dimension labels verbatim when present (convert
+feet/inches to metres); otherwise estimate from scale. Cabinet runs are
+the counter rectangles against walls. Mark sink_at_m / range_at_m with the
+centre position of the basin / cooktop symbol ON that run, or null. The
+fridge (REF) is "start" when it sits at the run's origin end, "end"
+otherwise. If the cooktop sits on the island, set cooktop true, and set
+seating to the side where stools/overhang are drawn. x_m,z_m are the
 island's top-left corner.
 
 Schema (all lengths in metres, numbers only):
@@ -224,7 +244,19 @@ def score(pred, truth):
     t_isl = truth["island"]["present"]
     p_isl = bool(isinstance(pred.get("island"), dict)
                  and pred["island"].get("present"))
-    s += 15 if t_isl == p_isl else 0
+    if t_isl != p_isl:
+        pass  # 0 of 15
+    elif not t_isl:
+        s += 15
+    else:
+        # presence right: 7 pts; geometry (position + size) right: 8 pts.
+        # An island the size of the room scores ~0 here - this is the
+        # "counter covered the whole middle" failure being measured.
+        s += 7
+        ti, pi = truth["island"], pred["island"]
+        geo_err = sum(abs((_num(pi.get(k)) or 99) - ti[k])
+                      for k in ("x_m", "z_m", "w_m", "d_m"))
+        s += 8 * max(0.0, 1 - max(0.0, geo_err - 0.5) / 2.5)
     return round(s, 1)
 
 

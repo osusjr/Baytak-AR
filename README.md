@@ -33,10 +33,35 @@ baytak_ar/
 └── docs/                 Isometric verification renders
 ```
 
-## New in Prototype v1 (build 19)
+## New in Prototype v1 build 20
+
+**Drop appliances ANYWHERE - the cabinets adapt.** The Design studio chips
+are no longer confined to existing counters: drop the fridge mid-run and
+the cabinets split around it; drop it in a corner and the perpendicular
+run slides back to make room; drop the sink or oven on a bare wall and a
+counter grows underneath it. A plan normalizer (ported from a validated
+Python prototype, `tools/plan_normalizer_proto.py`) enforces the rules
+after every edit: no overlapping cabinets, ever.
+
+**No more counter floods or closed boxes.** The same normalizer runs on
+every AI-read blueprint: an island that would blanket the middle of the
+room (the reported bug) is shrunk to keep an 0.85 m walkway or dropped,
+corner overlaps are trimmed, and the generator now builds at most three
+walls - the lowest-content side stays open so the 3D model reads as a
+showroom vignette, not a sealed room.
+
+**Two-model AI pipeline.** Blueprint reading is now two-stage: the
+benchmark-best vision model (`qwen3.5-397b`) *describes* the drawing like
+a surveyor - no schema in sight - and a text reasoning model
+(`mistral-large-3-675b`, benchmark-picked from 8 candidates) converts the
+description into the plan JSON, applying kitchen sanity rules. Single-call
+mode remains as automatic fallback. Also fixed: a coordinate-convention
+mismatch that mirrored every AI-read appliance on south/east walls.
+
+## Build 19
 
 **Drag the appliances (IKEA-planner-style).** The Design studio's 2D plan
-is now interactive: grab the **S**ink, **O**ven or **F**ridge chip and drag
+is interactive: grab the **S**ink, **O**ven or **F**ridge chip and drag
 it along any cabinet run - across runs too. A live label reads out the
 position in metres while you drag; edge margins, sink↔oven separation and
 the fridge slot are enforced so every drop is buildable, and "Build in
@@ -44,12 +69,11 @@ the fridge slot are enforced so every drop is buildable, and "Build in
 blueprint to try "what if the fridge was on the other wall".
 
 **Blueprint reading actually measured.** A reproducible benchmark
-(`tools/bench/`) scores vision models against three ground-truth
-blueprints. Result: `qwen/qwen3.5-397b-a17b` reads all three perfectly
-(100/100/100) and now leads the chain; the previous leader hung on every
-call (the "every blueprint gives the same kitchen" bug). A prompt echo
-guard rejects answers that parrot the schema example instead of measuring
-the drawing. Optional second provider: a free Gemini key adds
+(`tools/bench/`) scores vision models against ground-truth blueprints.
+Result: `qwen/qwen3.5-397b-a17b` leads the chain; the previous leader hung
+on every call (the "every blueprint gives the same kitchen" bug). A prompt
+echo guard rejects answers that parrot the schema example instead of
+measuring the drawing. Optional second provider: a free Gemini key adds
 `gemini-3.5-flash` to the fallback chain.
 
 ## v17
@@ -90,23 +114,23 @@ With no defines the app runs fully offline: bundled catalogue, manual
 measurements in the Blueprint studio, full Design studio and 3D/AR builds.
 Only the two AI analysis buttons need a key (either provider works alone).
 
-**Which AI model?** Measured on this repo's benchmark (`tools/bench/`,
-three ground-truth blueprints, July 2026):
+**Which AI models?** Measured on this repo's benchmark (`tools/bench/`,
+four ground-truth blueprints incl. a hard U-shape+bar case, July 2026;
+full tables in `tools/bench/RESULTS.md`). Blueprint reading is two-stage:
 
-| Model | Avg score | Speed | Cost |
-|---|---|---|---|
-| `qwen/qwen3.5-397b-a17b` (NVIDIA) | **100** | 7-35 s | free |
-| `nvidia/nemotron-nano-12b-v2-vl` | 83 | ~10 s | free |
-| `meta/llama-3.2-90b-vision-instruct` | 79 | ~18 s | free |
+| Stage | Chain (tried in order) | Why |
+|---|---|---|
+| 1. describe (vision) | `qwen3.5-397b` > `nemotron-nano-12b-vl` > `llama-3.2-90b-vision` | best layout reader by far |
+| 2. plan (reasoning) | `mistral-large-3-675b` > `deepseek-v4-pro` > `nemotron-3-super-120b` | both leaders converted 4/4 descriptions; mistral ~3x faster |
 
-The app tries them in that order. Notable rejects: `mistral-small-4`
-answered fast but drew cabinets on all four walls of *every* blueprint
-(the "same kitchen every time" bug), and `llama-4-maverick` /
-`nemotron-omni-reasoning` / `qwen3.5-122b` / `gemma-4-31b` hung on every
-call. If NVIDIA's free tier ever has a bad day, a free Gemini key
-(aistudio.google.com, no card) adds `gemini-3.5-flash` as an independent
-fallback. If the demo outgrows free
-tiers, the same OpenAI-style client works with paid keys - `gpt-5.4-mini`
+All free NVIDIA-hosted. Notable rejects: `mistral-small-4` drew cabinets
+on all four walls of *every* blueprint (the "same kitchen every time"
+bug); `llama-4-maverick`, `nemotron-omni-reasoning`, `qwen3.5-122b`,
+`gemma-4-31b`, `llama-3.3-nemotron-49b` and `qwen3-next-80b` hung on
+every call; `kimi-k2.6` 404s. If NVIDIA's free tier has a bad day, a free
+Gemini key (aistudio.google.com, no card) adds `gemini-3.5-flash` as an
+independent fallback for both stages. If the demo outgrows free tiers,
+the same OpenAI-style client works with paid keys - `gpt-5.4-mini`
 (~$0.006/analysis) or `gemini-3.5-flash` paid (~$0.012/analysis) are the
 best value; Anthropic's `claude-haiku-4-5` ($1/$5 per MTok) needs a small
 client change (different API schema).

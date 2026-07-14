@@ -92,7 +92,10 @@ class LayoutPlan {
   final double widthM;
   final double depthM;
   final List<RunPlan> runs;
-  final IslandPlan? island;
+
+  /// Mutable: the b20 normalizer (plan_normalizer.dart) shrinks or drops
+  /// an island that would block the kitchen's walkways.
+  IslandPlan? island;
   final List<WindowPlan> windows;
   final String summary;
   final String palette;
@@ -161,21 +164,24 @@ class LayoutPlan {
       }
       a = a.clamp(0.02, axisMax - 0.02).toDouble();
       b = b.clamp(0.02, axisMax - 0.02).toDouble();
-      if (b - a < 0.9) continue;
+      final fr = '${r['fridge'] ?? ''}'.toLowerCase();
+      final hasFridge = fr == 'start' || fr == 'end';
+      // fridge-only runs (a freestanding fridge from the drag editor) are
+      // exactly 0.8 m; counter runs need 0.9 m to fit a cabinet bay
+      if (b - a < (hasFridge ? 0.75 : 0.9)) continue;
       double? within(dynamic v) {
         final p = numOf(v, -1, axisMax, -1);
         if (p < a + 0.42 || p > b - 0.42) return null;
         return p;
       }
 
-      final fr = '${r['fridge'] ?? ''}'.toLowerCase();
       runs.add(RunPlan(
         wall: wall,
         a: a,
         b: b,
         sinkAt: r['sink_at_m'] == null ? null : within(r['sink_at_m']),
         rangeAt: r['range_at_m'] == null ? null : within(r['range_at_m']),
-        fridge: (fr == 'start' || fr == 'end') ? fr : null,
+        fridge: hasFridge ? fr : null,
         uppers: r['uppers'] == true,
       ));
     }
@@ -501,6 +507,12 @@ const _uy0 = 1.50, _uy1 = 2.20, _ud = 0.35, _hCeil = 2.70, _wallT = 0.06;
 
 /// Maps run-local (u along wall, v out from wall, y up) to world xyz.
 /// u runs a->b; v=0 at the wall face, growing into the room.
+///
+/// b20: ONE u-origin convention everywhere, matching the AI schema and the
+/// 2D plan painter - u is measured from the WEST end on north/south walls
+/// and from the NORTH end on east/west walls. (Pre-b20 the south/east
+/// frames counted from the opposite end, silently mirroring every
+/// AI-read appliance position on those walls.)
 class _Frame {
   _Frame(this.wall, this.w, this.d);
   final Wall wall;
@@ -511,11 +523,11 @@ class _Frame {
       case Wall.north:
         return [u, y, v];
       case Wall.south:
-        return [w - u, y, d - v];
+        return [u, y, d - v];
       case Wall.west:
         return [v, y, u];
       case Wall.east:
-        return [w - v, y, d - u];
+        return [w - v, y, u];
     }
   }
 
@@ -630,17 +642,6 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
     f.box(s, rc - 0.21, rc + 0.21, 1.52, _hCeil, 0.06, 0.34, 'steel');
   }
 
-  // windows on this wall (drawn in the wall plane)
-  for (final win in windows) {
-    if (win.wall != r.wall) continue;
-    final wa = win.center - win.width / 2, wb = win.center + win.width / 2;
-    f.box(s, wa, wb, 1.00, 1.90, -0.015, 0.005, 'glass');
-    f.box(s, wa - 0.05, wa, 0.95, 1.95, -0.02, 0.02, 'frame');
-    f.box(s, wb, wb + 0.05, 0.95, 1.95, -0.02, 0.02, 'frame');
-    f.box(s, wa - 0.05, wb + 0.05, 0.95, 1.00, -0.02, 0.02, 'frame');
-    f.box(s, wa - 0.05, wb + 0.05, 1.90, 1.95, -0.02, 0.02, 'frame');
-  }
-
   // uppers, skipping range and window spans
   if (r.uppers) {
     final skip = <List<double>>[
@@ -746,15 +747,47 @@ void _buildIsland(_Scene s, IslandPlan i, double w, double d) {
   }
 }
 
+/// Walls the generator will actually build: only walls hosting cabinet
+/// runs or windows, and never all four - the lowest-content wall stays
+/// open so the model reads as a showroom vignette, not a closed box.
+/// Used by the generator AND the plan normalizer (island clearance).
+Set<Wall> planWalls(LayoutPlan p) {
+  final score = <Wall, double>{};
+  for (final r in p.runs) {
+    score[r.wall] = (score[r.wall] ?? 0) + 2 * (r.b - r.a);
+  }
+  for (final win in p.windows) {
+    score[win.wall] = (score[win.wall] ?? 0) + win.width;
+  }
+  final walls = score.keys.toSet();
+  if (walls.length == 4) {
+    walls.remove(
+        score.entries.reduce((a, b) => a.value <= b.value ? a : b).key);
+  }
+  return walls;
+}
+
+/// Window glass + frame in the wall plane. b20: drawn once per BUILT wall
+/// (was per run), so open walls carry no floating glass and windows work
+/// on walls that host no cabinets.
+void _drawWallWindows(_Scene s, _Frame f, List<WindowPlan> windows) {
+  for (final win in windows) {
+    if (win.wall != f.wall) continue;
+    final wa = win.center - win.width / 2, wb = win.center + win.width / 2;
+    f.box(s, wa, wb, 1.00, 1.90, -0.015, 0.005, 'glass');
+    f.box(s, wa - 0.05, wa, 0.95, 1.95, -0.02, 0.02, 'frame');
+    f.box(s, wb, wb + 0.05, 0.95, 1.95, -0.02, 0.02, 'frame');
+    f.box(s, wa - 0.05, wb + 0.05, 0.95, 1.00, -0.02, 0.02, 'frame');
+    f.box(s, wa - 0.05, wb + 0.05, 1.90, 1.95, -0.02, 0.02, 'frame');
+  }
+}
+
 _Scene _buildPlan(LayoutPlan p, KitchenDesign design) {
   final s = _Scene();
   final w = p.widthM, d = p.depthM;
   s.box(0, -0.05, 0, w, 0.0, d, 'floor');
 
-  final wallsUsed = <Wall>{
-    for (final r in p.runs) r.wall,
-    for (final win in p.windows) win.wall,
-  };
+  final wallsUsed = planWalls(p);
   if (wallsUsed.contains(Wall.north)) s.box(0, 0, -_wallT, w, _hCeil, 0, 'wall');
   if (wallsUsed.contains(Wall.south)) s.box(0, 0, d, w, _hCeil, d + _wallT, 'wall');
   if (wallsUsed.contains(Wall.west)) s.box(-_wallT, 0, 0, 0, _hCeil, d, 'wall');
@@ -762,6 +795,9 @@ _Scene _buildPlan(LayoutPlan p, KitchenDesign design) {
 
   for (final r in p.runs) {
     _buildRun(s, _Frame(r.wall, w, d), r, p.windows, design);
+  }
+  for (final wall in wallsUsed) {
+    _drawWallWindows(s, _Frame(wall, w, d), p.windows);
   }
   final isl = p.island;
   if (isl != null) _buildIsland(s, isl, w, d);

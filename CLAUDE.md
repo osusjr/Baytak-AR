@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 19).
+(internal build counter in lib/theme.dart, currently 20).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -41,7 +41,24 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   appliances, windows, island/peninsula, palette; toJson/fromJson) ->
   textured GLB in app documents, opened via file:// src. Also builds whole
   room scenes from furniture placements (90-degree rotations only - keeps
-  boxes axis-aligned).
+  boxes axis-aligned). b20 COORDINATE CONVENTION (unified, do not revert):
+  run u is measured from the WEST end on north/south walls and the NORTH
+  end on east/west walls - same as the AI schema; _Frame, the 2D painters
+  and the normalizer all agree. planWalls() caps built walls at 3 (lowest
+  content side stays open - showroom vignette, never a sealed box);
+  windows draw once per BUILT wall. Fridge-only runs (length 0.8,
+  fridge='start') are legal - that is a freestanding fridge.
+- Plan normalizer: lib/services/plan_normalizer.dart (Python prototype
+  tools/plan_normalizer_proto.py - run it after rule changes; constants
+  FROZEN from it). Runs after AI parse (blueprint_ai), on studio entry and
+  after every drag edit: clamps/merges runs (runs touching at a fridge
+  seam stay separate), trims perpendicular runs clear of fridges
+  (fridge is immovable - "cabinets adjust"), E/W yields to N/S at plain
+  counter corners, island overlaps pulled to touching + attachments
+  allowed on adjacent sides only (opposite pair = room-bridging bar ->
+  shorter contact pushed to a 0.85 m walkway), island < 0.6 m after
+  shrinking is dropped (fixes the "counter covered the whole middle"
+  blueprint failure), appliances re-clamped.
 - Design system (v17): lib/services/kitchen_design.dart. KitchenDesign =
   one choice per element (lower/upper/island cabinet finishes, worktop,
   wall, floor, backsplash, hardware, handle bar/knob/none, door
@@ -55,32 +72,46 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   GLBs and TINTED by each material's baseColorFactor; designs can also
   remap which texture a slot uses (e.g. butcher-block worktop -> wood).
   Swap PNGs = new look, no code.
-- AI: lib/services/ai_client.dart - FREE hosted vision models, tried as a
-  candidate chain: NVIDIA models from aiVisionModels (integrate.api.
-  nvidia.com, OpenAI-style chat/completions, Bearer nvapi-key), then
-  Gemini via Google's OpenAI-compatible endpoint when GEMINI_API_KEY is
-  set. Chain order is BENCHMARK-RANKED (tools/bench/, 3 ground-truth
-  blueprints): qwen3.5-397b-a17b scored 100/100/100, nemotron-nano-12b 83,
-  llama-3.2-90b 79. mistral-small-4 was REJECTED (drew runs on all four
-  walls of every drawing - the same-kitchen-every-time bug); llama-4-
-  maverick/nemotron-omni/qwen-122b/gemma-4 HANG (60 s per-candidate
+- AI: lib/services/ai_client.dart - FREE hosted models, tried as candidate
+  chains: NVIDIA (integrate.api.nvidia.com, OpenAI-style chat/completions,
+  Bearer nvapi-key), then Gemini via Google's OpenAI-compatible endpoint
+  when GEMINI_API_KEY is set. visionCall() uses aiVisionModels
+  (qwen3.5-397b > nemotron-nano-12b-vl > llama-3.2-90b), textCall() uses
+  aiTextModels (mistral-large-3-675b > deepseek-v4-pro >
+  nemotron-3-super-120b); BOTH orders are BENCHMARK-RANKED (tools/bench/,
+  4 ground-truth blueprints incl. the hard U-shape; RESULTS.md has the
+  tables). Rejected: mistral-small-4 (same-kitchen-every-time bug),
+  kimi-k2.6 (404), and llama-4-maverick/nemotron-omni/qwen-122b/gemma-4/
+  llama-3.3-nemotron-49b/qwen3-next-80b (HANG - the 60 s per-candidate
   timeout + 150 s total budget make every failure fall through to the
-  next candidate - do not "optimize" that away). Images
-  auto-downscaled/JPEG-recompressed on-device to <=130 KB raw (NVIDIA
-  ~180 KB inline data-URI limit, base64 +33%) in an isolate via compute().
-  Key resolution: dart-define, else Supabase demo_config cached to prefs
-  ('cfg_nvidia_key'/'cfg_gemini_key'). No provider/key UI; aiConfigured()
-  gates the AI buttons. extractJsonObject() strips <think> blocks/fences
-  and isolates the first balanced JSON object. blueprint_ai.dart reads
-  kitchen blueprints -> LayoutPlan (prompt forbids echoing the schema
-  example; an echo guard rejects width/depth < 1 m); room_ai.dart reads
-  room photos -> measurements + catalogue picks with x/z/rot.
-- Drag editor: lib/services/plan_editor.dart - pure logic for moving
-  sink/range/fridge along and across runs (edgeMargin 0.45, minSeparation
-  0.95, fridgeSpan 0.8; fridge snaps to run ends and re-clamps the
-  others). UI in design_studio_screen.dart: PlanTransform maps plan
-  metres <-> canvas px, _InteractivePlan drags S/O/F chips with a
-  chip-scoped PanGestureRecognizer (page scroll still wins elsewhere);
+  next candidate; do not "optimize" that away). Empty content falls back
+  to message.reasoning_content. Images auto-downscaled/JPEG-recompressed
+  on-device to <=130 KB raw (NVIDIA ~180 KB inline data-URI limit, base64
+  +33%) in an isolate via compute(). Key resolution: dart-define, else
+  Supabase demo_config cached to prefs ('cfg_nvidia_key'/
+  'cfg_gemini_key'). No provider/key UI; aiConfigured() gates the AI
+  buttons. extractJsonObject() strips <think> blocks/fences and isolates
+  the first balanced JSON object. blueprint_ai.dart is TWO-STAGE: vision
+  describes the drawing (surveyor prompt, no schema) -> text model builds
+  the plan JSON; single-call path is the automatic fallback; every parse
+  passes the echo guard (width/depth < 1 m rejected) AND normalizePlan().
+  Prompts share the _senses block (pantry is not a fridge, peninsula is
+  the island not a run, dashed edges are not walls, w=x-extent d=z-extent)
+  - each line guards a misread observed on the bench U-shape.
+  room_ai.dart reads room photos -> measurements + catalogue picks.
+- Drag editor: lib/services/plan_editor.dart - pure logic; b20 free
+  placement via place(kind, wall, u): drop on/near/far from cabinets and
+  runs are created (sink/oven grow a 1.5 m run on bare wall), extended
+  (within 0.6 m of an end), or split (mid-run fridge = 0.8 m gap between
+  two touching runs); fridge on bare wall = fridge-only run; corner
+  conflicts resolved by normalizePlan (constants: edgeMargin 0.45,
+  minSeparation 0.95, fridgeSpan 0.8, endSnap 0.55). UI in
+  design_studio_screen.dart: PlanTransform maps plan metres <-> canvas px
+  (b20 unified convention), wallCoord() targets ANY wall, chips live-move
+  while over existing cabinets and turn into a ghost + landing label over
+  bare floor; the STRUCTURAL edit happens once on drag release (never
+  during updates - a drag must not litter the plan with run fragments).
+  Chip-scoped PanGestureRecognizer keeps page scroll working elsewhere;
   every edit persists the plan + bumps editor.revision for repaint.
   Unit-tested in widget_test.dart - extend those tests when touching the
   drag rules.
