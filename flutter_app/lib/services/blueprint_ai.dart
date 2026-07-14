@@ -20,6 +20,11 @@ const _prompt = '''
 You are a kitchen floor-plan reader. Analyze the attached blueprint image
 and return the kitchen layout as JSON ONLY - no prose, no markdown fences.
 
+IMPORTANT: measure THIS drawing. Kitchens vary a lot - galley (two facing
+runs), single wall, L-shape, U-shape, with or without an island. Report
+only what is actually drawn; never copy the example numbers from the
+schema, and never invent appliances or runs that are not in the image.
+
 Coordinate system: looking at the drawing, origin is the TOP-LEFT inside
 corner of the room. x runs right (metres), z runs down (metres).
 Walls: north = top edge, south = bottom, west = left, east = right.
@@ -27,13 +32,14 @@ Positions along north/south walls are x metres; along east/west walls are
 z metres, both measured from that wall's origin end (west end for N/S,
 north end for E/W).
 
-Read printed dimensions when present (convert feet/inches to metres);
-otherwise estimate from scale. Cabinet runs are the counter rectangles
-against walls. Mark sink_at_m / range_at_m with the centre position of the
-basin / cooktop ON that run, or null. A freestanding or peninsula counter
-(bar) is the "island"; if the cooktop sits on it, set cooktop true, and
-set seating to the side where stools/overhang are drawn. x_m,z_m are the
-island's top-left corner.
+Use the printed dimension labels verbatim when present (convert
+feet/inches to metres); otherwise estimate from scale. Cabinet runs are
+the counter rectangles against walls. Mark sink_at_m / range_at_m with the
+centre position of the basin / cooktop symbol ON that run, or null. The
+fridge (REF) is "start" when it sits at the run's origin end, "end"
+otherwise. A freestanding or peninsula counter (bar) is the "island"; if
+the cooktop sits on it, set cooktop true, and set seating to the side
+where stools/overhang are drawn. x_m,z_m are the island's top-left corner.
 
 Schema (all lengths in metres, numbers only):
 {
@@ -51,9 +57,11 @@ Schema (all lengths in metres, numbers only):
  "summary": "one short sentence describing the layout"
 }
 
-Choose the palette that suits the drawing's context: warm_walnut for
-classic/family homes, light_oak for bright/small/modern spaces,
-dark_modern for premium/contemporary.
+Before answering, double-check: do your width_m/depth_m match the printed
+dimension arrows? Is every run on the wall where the drawing shows
+cabinets? Choose the palette that suits the drawing's context:
+warm_walnut for classic/family homes, light_oak for bright/small/modern
+spaces, dark_modern for premium/contemporary.
 ''';
 
 Future<LayoutPlan> analyzeBlueprint(File image) async {
@@ -80,6 +88,18 @@ Future<LayoutPlan> analyzeBlueprint(File image) async {
   try {
     final json =
         jsonDecode(extractJsonObject(text)) as Map<String, dynamic>;
+    // Echo guard: a model that ignored the image tends to return the
+    // schema's example values. Reject those instead of clamping them into
+    // a plausible-looking default kitchen (the v18 "every blueprint gives
+    // the same model" failure).
+    double numOf(dynamic v) =>
+        (v is num) ? v.toDouble() : double.tryParse('$v') ?? 0;
+    if (numOf(json['width_m']) < 1.0 || numOf(json['depth_m']) < 1.0) {
+      throw BlueprintAnalysisException(
+          'The AI answered without real measurements for this drawing. '
+          'Try again, or use a sharper photo where the dimension labels '
+          'are readable.');
+    }
     final plan = LayoutPlan.fromJson(json);
     if (plan.runs.isEmpty) {
       throw BlueprintAnalysisException(

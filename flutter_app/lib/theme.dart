@@ -1,6 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+/// User-facing version label (investor-friendly wording).
+const kVersionLabel = 'PROTOTYPE v1';
+
+/// Internal build counter - bump EVERY change round. The RENDER OK strips
+/// show it so stale builds on the test phone are still detectable now that
+/// the marketing label stays fixed.
+const kBuildNumber = 19;
+
+/// Diagnostic stamp for the per-screen "RENDER OK" strips.
+const kBuildStamp = '$kVersionLabel (b$kBuildNumber)';
+
 /// Palette v2 - "blueprint on paper": deep navy ink, sapphire primary,
 /// azure accents on white. Constant NAMES are kept from the warm palette
 /// so every screen recolors from this single file:

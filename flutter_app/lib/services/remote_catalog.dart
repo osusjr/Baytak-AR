@@ -75,15 +75,22 @@ class RemoteCatalog {
     if (resp.statusCode != 200) return; // table optional
     final rows = jsonDecode(resp.body) as List;
     final prefs = await SharedPreferences.getInstance();
-    var sawKey = false;
+    const keys = {
+      'nvidia_api_key': 'cfg_nvidia_key',
+      'gemini_api_key': 'cfg_gemini_key',
+    };
+    final seen = <String>{};
     for (final r in rows) {
       if (r is! Map) continue;
-      if ('${r['key']}' == 'nvidia_api_key') {
-        sawKey = true;
-        await prefs.setString('cfg_nvidia_key', '${r['value']}'.trim());
+      final pref = keys['${r['key']}'];
+      if (pref != null) {
+        seen.add(pref);
+        await prefs.setString(pref, '${r['value']}'.trim());
       }
     }
-    if (!sawKey) await prefs.remove('cfg_nvidia_key');
+    for (final pref in keys.values) {
+      if (!seen.contains(pref)) await prefs.remove(pref);
+    }
   }
 
   static Future<List<DemoModel>> _fetchProducts() async {

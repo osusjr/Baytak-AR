@@ -145,7 +145,7 @@ class ProfileTab extends StatelessWidget {
           _Row(
             icon: Icons.info_outline_rounded,
             title: 'Baytak AR - demo build',
-            subtitle: 'Version 0.7.0 · cart and orders are stored on this '
+            subtitle: 'Prototype v1 (build $kBuildNumber) · cart and orders are stored on this '
                 'device',
           ),
         ],
