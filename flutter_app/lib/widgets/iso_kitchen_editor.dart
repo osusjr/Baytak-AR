@@ -1102,7 +1102,12 @@ class _OverlayPainter extends CustomPainter {
     for (final kind in ApplianceKind.values) {
       var c = s._chipCenter(kind);
       final active = s._mode == _DragMode.chip && s._chipKind == kind;
-      if (active && s._finger != null) c = s._finger! - s._grabOffset;
+      if (active && s._finger != null) {
+        // the grab offset is floor-anchored (drop math needs y=0); add
+        // the billboard lift back so the chip doesn't ride at floor level
+        c = (s._finger! - s._grabOffset)
+            .translate(0, -0.95 * 0.62 * v.scale);
+      }
       if (c == null) continue;
       final radius = active ? 16.0 : 13.0;
       canvas.drawCircle(
