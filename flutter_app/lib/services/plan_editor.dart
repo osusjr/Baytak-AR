@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'kitchen_generator.dart';
 import 'plan_normalizer.dart';
 
@@ -97,11 +99,9 @@ class PlanEditor {
   /// that is - on, near, or far from existing cabinets. Returns false only
   /// when the drop genuinely cannot be built there (the plan is then left
   /// exactly as it was).
-  bool place(ApplianceKind kind, Wall wall, double u) {
-    // snapshot: if the normalizer has to delete the drop target (e.g. a
-    // new corner run with no room), roll everything back instead of
-    // letting the appliance silently vanish
-    final savedRuns = [
+  /// Deep copy of the mutable plan state, for rollback on failed edits.
+  (List<RunPlan>, IslandPlan?) _snapshot() {
+    final runs = [
       for (final r in plan.runs)
         RunPlan(
             wall: r.wall,
@@ -114,7 +114,7 @@ class PlanEditor {
             auto: r.auto)
     ];
     final isl = plan.island;
-    final savedIsland = isl == null
+    final island = isl == null
         ? null
         : IslandPlan(
             x0: isl.x0,
@@ -123,7 +123,21 @@ class PlanEditor {
             d: isl.d,
             seating: isl.seating,
             cooktop: isl.cooktop);
+    return (runs, island);
+  }
 
+  void _restore((List<RunPlan>, IslandPlan?) saved) {
+    plan.runs
+      ..clear()
+      ..addAll(saved.$1);
+    plan.island = saved.$2;
+  }
+
+  bool place(ApplianceKind kind, Wall wall, double u) {
+    // snapshot: if the normalizer has to delete the drop target (e.g. a
+    // new corner run with no room), roll everything back instead of
+    // letting the appliance silently vanish
+    final saved = _snapshot();
     var ok = kind == ApplianceKind.fridge
         ? _placeFridge(wall, u)
         : _placeAppliance(kind, wall, u);
@@ -132,10 +146,188 @@ class PlanEditor {
       ok = runWith(kind) != null;
     }
     if (!ok) {
-      plan.runs
-        ..clear()
-        ..addAll(savedRuns);
-      plan.island = savedIsland;
+      _restore(saved);
+      return false;
+    }
+    revision++;
+    return true;
+  }
+
+  /// Move a whole cabinet run: slide it along its wall, or carry it to
+  /// another wall (appliances ride along). [u] is the desired CENTRE of
+  /// the run along [wall]. [mirror] flips the appliance arrangement on a
+  /// re-wall (the view layer sets it when source and target walls read in
+  /// opposite screen directions, so the layout the user built is
+  /// preserved VISUALLY). Rolls back losslessly when the destination
+  /// cannot host the run.
+  bool moveRun(RunPlan run, Wall wall, double u, {bool mirror = false}) {
+    if (!plan.runs.contains(run)) return false;
+    final saved = _snapshot();
+    final m = _wallLen(wall);
+    final len = run.length;
+    if (m < len + 0.04) return false;
+    final a = (u - len / 2).clamp(0.02, m - len - 0.02).toDouble();
+
+    RunPlan moved;
+    if (wall == run.wall) {
+      final shift = a - run.a;
+      run.a += shift;
+      run.b += shift;
+      if (run.sinkAt != null) run.sinkAt = run.sinkAt! + shift;
+      if (run.rangeAt != null) run.rangeAt = run.rangeAt! + shift;
+      moved = run;
+    } else {
+      // wall is final on RunPlan - replace with a re-walled copy,
+      // carrying appliances at the same offsets from the run start
+      double? carry(double? at) {
+        if (at == null) return null;
+        final off = at - run.a;
+        return a + (mirror ? len - off : off);
+      }
+
+      moved = RunPlan(
+        wall: wall,
+        a: a,
+        b: a + len,
+        sinkAt: carry(run.sinkAt),
+        rangeAt: carry(run.rangeAt),
+        fridge: !mirror
+            ? run.fridge
+            : run.fridge == 'start'
+                ? 'end'
+                : run.fridge == 'end'
+                    ? 'start'
+                    : null,
+        uppers: run.uppers,
+        auto: run.auto,
+      );
+      final i = plan.runs.indexOf(run);
+      plan.runs[i] = moved;
+    }
+    final carriedSink = moved.sinkAt != null;
+    final carriedRange = moved.rangeAt != null;
+    final carriedFridge = moved.fridge != null;
+    normalizePlan(plan);
+    // the move failed if the DRAGGED run itself is gone (a pre-existing
+    // run overlapping the interval must not mask its deletion); a merge
+    // into a neighbour counts as survival when the combined run covers
+    // the drop point. Appliances the run carried must survive too - a
+    // drop must never silently delete the sink.
+    var survived = plan.runs.contains(moved) ||
+        plan.runs.any((r) =>
+            r.wall == moved.wall &&
+            r.a <= (moved.a + moved.b) / 2 &&
+            r.b >= (moved.a + moved.b) / 2 &&
+            r.length >= len - 0.05);
+    survived = survived &&
+        (!carriedSink || runWith(ApplianceKind.sink) != null) &&
+        (!carriedRange || runWith(ApplianceKind.range) != null) &&
+        (!carriedFridge || runWith(ApplianceKind.fridge) != null);
+    if (!survived) {
+      _restore(saved);
+      return false;
+    }
+    revision++;
+    return true;
+  }
+
+  /// Resize a run by dragging one of its ends to [v] (metres along the
+  /// wall). Appliances limit how far it can shrink; growth is clamped by
+  /// the wall and neighbours via the normalizer. The IKEA staple.
+  bool resizeRun(RunPlan run, {required bool startEnd, required double v}) {
+    if (!plan.runs.contains(run)) return false;
+    final saved = _snapshot();
+    final m = _wallLen(run.wall);
+    // the shrink limit: keep every appliance (+ margins) inside
+    var lo = run.a, hi = run.b;
+    final needs = <double>[
+      if (run.sinkAt != null) run.sinkAt!,
+      if (run.rangeAt != null) run.rangeAt!,
+    ];
+    if (startEnd) {
+      var maxA = hi - PlanNormalizer.minRun;
+      for (final p in needs) {
+        maxA = math.min(maxA, p - edgeMargin);
+      }
+      if (run.fridge == 'start') maxA = math.min(maxA, run.a);
+      // a fridge-only run has no room to give: clamp bounds can invert
+      if (maxA < 0.02) return false;
+      lo = v.clamp(0.02, maxA).toDouble();
+      if (hi - lo < PlanNormalizer.minRun - 1e-9) return false;
+      run.a = lo;
+    } else {
+      var minB = lo + PlanNormalizer.minRun;
+      for (final p in needs) {
+        minB = math.max(minB, p + edgeMargin);
+      }
+      if (run.fridge == 'end') minB = math.max(minB, run.b);
+      if (minB > m - 0.02) return false;
+      hi = v.clamp(minB, m - 0.02).toDouble();
+      if (hi - lo < PlanNormalizer.minRun - 1e-9) return false;
+      run.b = hi;
+    }
+    normalizePlan(plan);
+    if (!plan.runs.contains(run)) {
+      _restore(saved);
+      return false;
+    }
+    revision++;
+    return true;
+  }
+
+  /// Remove a whole run (long-press action). The fridge/sink/oven on it
+  /// disappear with it - visible, deliberate, and undoable.
+  bool removeRun(RunPlan run) {
+    if (!plan.runs.remove(run)) return false;
+    normalizePlan(plan);
+    revision++;
+    return true;
+  }
+
+  // ---------------------------------------------------------------- undo --
+  final List<(List<RunPlan>, IslandPlan?)> _undoStack = [];
+  static const _undoDepth = 8;
+
+  /// Push the current state; called by the UI before each structural
+  /// gesture (drag release, resize, delete) - NOT on every live move.
+  void checkpoint() {
+    _undoStack.add(_snapshot());
+    if (_undoStack.length > _undoDepth) _undoStack.removeAt(0);
+  }
+
+  bool get canUndo => _undoStack.isNotEmpty;
+
+  bool undo() {
+    if (_undoStack.isEmpty) return false;
+    _restore(_undoStack.removeLast());
+    revision++;
+    return true;
+  }
+
+  /// Drop the most recent checkpoint without restoring it - used when the
+  /// gesture it was taken for turned out to be a no-op/failed drop.
+  void undoDiscardLast() {
+    if (_undoStack.isNotEmpty) _undoStack.removeLast();
+  }
+
+  /// Drag the island/peninsula by its centre to floor position ([cx],[cz]).
+  /// The normalizer re-applies walkway and attachment rules: the island
+  /// may be nudged (pulled to touch a run, pushed to keep a walkway) but
+  /// a drag must never silently RESIZE it - dims changing means the spot
+  /// cannot host the island, so the move is rolled back instead.
+  bool moveIsland(double cx, double cz) {
+    final isl = plan.island;
+    if (isl == null) return false;
+    final saved = _snapshot();
+    final w0 = isl.w, d0 = isl.d;
+    isl.x0 = (cx - isl.w / 2).clamp(0.0, plan.widthM - isl.w).toDouble();
+    isl.z0 = (cz - isl.d / 2).clamp(0.0, plan.depthM - isl.d).toDouble();
+    normalizePlan(plan);
+    final after = plan.island;
+    if (after == null ||
+        (after.w - w0).abs() > 0.02 ||
+        (after.d - d0).abs() > 0.02) {
+      _restore(saved);
       return false;
     }
     revision++;

@@ -33,7 +33,35 @@ baytak_ar/
 └── docs/                 Isometric verification renders
 ```
 
-## New in Prototype v1 build 20
+## New in Prototype v1 build 24
+
+**The 3D layout editor - drag everything, on the model.** The Design
+studio now opens on an isometric 3D view of the generated kitchen, drawn
+entirely in Flutter (no WebView - the device landmines stand). Everything
+is draggable, IKEA-planner style:
+
+- **Sink / oven / fridge** - grab their round chips and drop them
+  anywhere; the cabinet rules from b20 apply on release.
+- **Whole cabinet runs** - hold any counter to lift it (a ghost follows
+  your finger with a live landing label), slide it along its wall or
+  carry it to another wall; appliances ride along, and when the target
+  wall reads in the opposite direction the arrangement is mirrored so it
+  LOOKS the same as what you built.
+- **The island** - hold and drag it across the floor; walkway rules keep
+  it honest, and a drag can never silently resize it.
+- **Tap a counter** for resize handles (drag the end dots), an
+  uppers-on/off toggle, and delete. Every structural edit has **Undo**.
+- **Rotate** the view in 90-degree steps; the camera never moves on its
+  own (frozen on entry - a drop can't spin the room).
+
+Under the hood: element-level topological depth sorting (scalar painter
+sorts provably misorder L-corners), backface-culled walls with low stubs
+so near walls stay visible drop targets, grab-anchored floor projection
+(no parallax teleports when grabbing the tall fridge), 0.05 m snapping,
+and a two-layer paint split so drags only repaint a thin overlay - all
+decisions frozen from a three-lens design review before implementation.
+
+## Build 20
 
 **Drop appliances ANYWHERE - the cabinets adapt.** The Design studio chips
 are no longer confined to existing counters: drop the fridge mid-run and
