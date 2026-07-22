@@ -11,6 +11,8 @@ import 'package:baytak_ar/services/plan_editor.dart';
 import 'package:baytak_ar/services/plan_normalizer.dart';
 import 'package:baytak_ar/state/app_state.dart';
 import 'package:baytak_ar/theme.dart';
+import 'package:baytak_ar/widgets/iso_kitchen_editor.dart';
+import 'package:flutter/material.dart' show Size;
 
 void main() {
   setUpAll(() {
@@ -311,6 +313,73 @@ void main() {
       expect(plan.runs.any((r) => r.wall == Wall.east), isFalse);
     });
 
+    test('moveRun slides a run and its appliances along the wall', () {
+      final plan = lShape();
+      normalizePlan(plan); // studio-entry state: corners already resolved
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      final sinkOffset = north.sinkAt! - north.a;
+      final len = north.length;
+      // slide right, away from the west-run corner - clear floor there
+      final ok =
+          ed.moveRun(north, Wall.north, plan.widthM - len / 2 - 0.05);
+      expect(ok, isTrue);
+      expect(north.length, closeTo(len, 1e-9));
+      expect(north.sinkAt! - north.a, closeTo(sinkOffset, 1e-9));
+    });
+
+    test('moveRun refuses a wall shorter than the run', () {
+      final plan = lShape(); // north run 3.49 m, east wall only 3.4 m
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      expect(ed.moveRun(north, Wall.east, plan.depthM / 2), isFalse);
+      expect(plan.runs.any((r) => r.wall == Wall.north), isTrue);
+    });
+
+    test('moveRun carries a run to another wall, sink riding along', () {
+      final plan = lShape();
+      normalizePlan(plan);
+      final ed = PlanEditor(plan);
+      final north = plan.runs.firstWhere((r) => r.wall == Wall.north);
+      final sinkOffset = north.sinkAt! - north.a;
+      // south wall has the same length as north - always fits
+      final ok = ed.moveRun(north, Wall.south, plan.widthM / 2);
+      expect(ok, isTrue);
+      final south = plan.runs.firstWhere((r) => r.wall == Wall.south);
+      expect(south.sinkAt, isNotNull);
+      expect(south.sinkAt! - south.a,
+          closeTo(sinkOffset, 0.5)); // normalizer may re-clamp slightly
+      expect(plan.runs.any((r) => r.wall == Wall.north && r.sinkAt != null),
+          isFalse);
+    });
+
+    test('moveIsland never resizes the island - bad spots roll back', () {
+      final plan = const KitchenSpec(
+        widthM: 4.2,
+        depthM: 3.4,
+        layout: KitchenLayout.lShape,
+        island: true,
+      ).toPlan();
+      normalizePlan(plan);
+      final ed = PlanEditor(plan);
+      final isl = plan.island!;
+      final w0 = isl.w, d0 = isl.d;
+      // valid drag: middle of the open floor
+      expect(ed.moveIsland(plan.widthM / 2, plan.depthM * 0.68), isTrue);
+      expect(isl.w, closeTo(w0, 0.021));
+      expect(isl.d, closeTo(d0, 0.021));
+      // hostile drag: shoved into the north run - must roll back, not shrink
+      final before = (isl.x0, isl.z0);
+      ed.moveIsland(plan.widthM / 2, 0.3);
+      final after = plan.island!;
+      expect(after.w, closeTo(w0, 0.021));
+      expect(after.d, closeTo(d0, 0.021));
+      // either rejected (position restored) or nudged clear - never inside
+      // the run band
+      expect(after.z0, greaterThan(0.62));
+      expect(before, isNotNull);
+    });
+
     test('fridge-only runs survive a JSON round-trip', () {
       final plan = lShape();
       PlanEditor(plan).place(ApplianceKind.fridge, Wall.east, 2.0);
@@ -319,6 +388,90 @@ void main() {
           round.runs.any(
               (r) => r.wall == Wall.east && r.fridge != null),
           isTrue);
+    });
+  });
+
+  group('Iso 3D editor (b24)', () {
+    final plan = LayoutPlan(
+      widthM: 4.2,
+      depthM: 3.4,
+      runs: [RunPlan(wall: Wall.north, a: 0.5, b: 3.9, sinkAt: 1.2)],
+    );
+
+    test('view rotation round-trips for all four k values', () {
+      for (var k = 0; k < 4; k++) {
+        final v = IsoView(plan, const Size(360, 320), k);
+        for (final p in [(0.3, 0.4), (4.0, 3.0), (2.1, 1.7)]) {
+          final (rx, rz) = v.rot(p.$1, p.$2);
+          final (x, z) = v.unrot(rx, rz);
+          expect(x, closeTo(p.$1, 1e-9), reason: 'k=$k');
+          expect(z, closeTo(p.$2, 1e-9), reason: 'k=$k');
+        }
+      }
+    });
+
+    test('floor unprojection inverts projection for all four views', () {
+      for (var k = 0; k < 4; k++) {
+        final v = IsoView(plan, const Size(360, 320), k);
+        for (final p in [(0.5, 0.5), (3.7, 2.9), (2.0, 1.0)]) {
+          final screen = v.project(p.$1, 0, p.$2);
+          final (x, z) = v.unprojectFloor(screen);
+          expect(x, closeTo(p.$1, 1e-6), reason: 'k=$k');
+          expect(z, closeTo(p.$2, 1e-6), reason: 'k=$k');
+        }
+      }
+    });
+
+    test('resizeRun respects appliances and minimum length', () {
+      final p = LayoutPlan(
+        widthM: 5.0,
+        depthM: 3.0,
+        runs: [RunPlan(wall: Wall.north, a: 0.5, b: 4.5, sinkAt: 1.2)],
+      );
+      final ed = PlanEditor(p);
+      final run = p.runs.first;
+      // cannot shrink past the sink + edge margin
+      ed.resizeRun(run, startEnd: true, v: 2.0);
+      expect(run.a, lessThanOrEqualTo(1.2 - PlanEditor.edgeMargin + 1e-9));
+      // growing to the wall end works
+      expect(ed.resizeRun(run, startEnd: false, v: 4.98), isTrue);
+      expect(run.b, closeTo(4.98, 1e-9));
+    });
+
+    test('undo restores the pre-edit layout', () {
+      final p = LayoutPlan(
+        widthM: 5.0,
+        depthM: 3.0,
+        runs: [RunPlan(wall: Wall.north, a: 0.5, b: 4.5, sinkAt: 1.2)],
+      );
+      final ed = PlanEditor(p);
+      ed.checkpoint();
+      ed.place(ApplianceKind.fridge, Wall.north, 3.0);
+      expect(p.runs.length, greaterThan(1)); // split happened
+      expect(ed.undo(), isTrue);
+      expect(p.runs.length, 1);
+      expect(p.runs.first.fridge, isNull);
+      expect(p.runs.first.a, closeTo(0.5, 1e-9));
+    });
+
+    test('mirrored wall transfer flips the appliance arrangement', () {
+      final p = LayoutPlan(
+        widthM: 4.0,
+        depthM: 4.0,
+        runs: [
+          RunPlan(wall: Wall.north, a: 0.5, b: 3.5, sinkAt: 1.0,
+              fridge: 'end'),
+        ],
+      );
+      final ed = PlanEditor(p);
+      final ok =
+          ed.moveRun(p.runs.first, Wall.south, 2.0, mirror: true);
+      expect(ok, isTrue);
+      final south = p.runs.firstWhere((r) => r.wall == Wall.south);
+      // sink was 0.5 from the start -> now 0.5 from the END; fridge
+      // flipped from 'end' to 'start'
+      expect(south.fridge, 'start');
+      expect(south.b - south.sinkAt!, closeTo(0.5, 0.1));
     });
   });
 

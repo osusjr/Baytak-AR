@@ -265,20 +265,58 @@ def normalize_plan(plan):
                                             min(x1, ox1) - max(x0, ox0), oz0))
             return sides
 
-        sides = side_gaps()
-        # nearest obstacle per side decides that side's state
-        state = {}
-        for side, entries in sides.items():
-            if not entries:
-                state[side] = ("free", 0.0, None)
-                continue
-            gap, contact, front = min(entries, key=lambda e: e[0])
-            if gap < ATTACH_EPS:
-                state[side] = ("attached", contact, front)
-            elif gap < WALKWAY:
-                state[side] = ("tight", contact, front)
+        def classify():
+            sides = side_gaps()
+            st = {}
+            for side, entries in sides.items():
+                if not entries:
+                    st[side] = ("free", 0.0, None)
+                    continue
+                gap, contact, front = min(entries, key=lambda e: e[0])
+                if gap < ATTACH_EPS:
+                    st[side] = ("attached", contact, front)
+                elif gap < WALKWAY:
+                    st[side] = ("tight", contact, front)
+                else:
+                    st[side] = ("free", contact, front)
+            return st
+
+        state = classify()
+
+        # a tight side TRANSLATES the island away when the opposite side
+        # is free (keeps the island's size - important both for presets
+        # and for drag edits); only shrink when there is nowhere to go.
+        # Side states are STALE after a shift (an x-shift changes which
+        # obstacles face the z sides) - recompute after each one.
+        def translate(axis):
+            lo_s, hi_s = ("x0", "x1") if axis == "x" else ("z0", "z1")
+            nonlocal x0, x1, z0, z1
+            lo, hi = state[lo_s], state[hi_s]
+            room = w if axis == "x" else d
+            a0, a1 = (x0, x1) if axis == "x" else (z0, z1)
+            if lo[0] == "tight" and hi[0] == "free":
+                shift = (lo[2] + WALKWAY) - a0  # > 0, move toward hi
+                blocked = a1 + shift > room or (
+                    hi[2] is not None and hi[2] - (a1 + shift) < WALKWAY)
+            elif hi[0] == "tight" and lo[0] == "free":
+                shift = (hi[2] - WALKWAY) - a1  # < 0, move toward lo
+                blocked = a0 + shift < 0 or (
+                    lo[2] is not None and (a0 + shift) - lo[2] < WALKWAY)
             else:
-                state[side] = ("free", contact, front)
+                return False
+            if blocked:
+                return False  # fall through to the shrink pass
+            if axis == "x":
+                x0, x1 = a0 + shift, a1 + shift
+            else:
+                z0, z1 = a0 + shift, a1 + shift
+            return True
+
+        if translate("x"):
+            state = classify()
+        if translate("z"):
+            state = classify()
+
         # attachments are fine on ADJACENT sides (corner peninsula) but an
         # OPPOSITE pair would bridge the room: keep the longer contact,
         # push the other side out to a walkway.
@@ -288,6 +326,7 @@ def normalize_plan(plan):
                     state[hi_side][0] == "attached":
                 demoted.add(lo_side if state[lo_side][1] < state[hi_side][1]
                             else hi_side)
+
         for side, (kind, _c, front) in state.items():
             need_push = (kind == "tight") or \
                 (kind == "attached" and side in demoted)

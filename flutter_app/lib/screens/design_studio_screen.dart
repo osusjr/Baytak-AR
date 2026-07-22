@@ -11,6 +11,7 @@ import '../services/kitchen_generator.dart';
 import '../services/plan_editor.dart';
 import '../services/plan_normalizer.dart';
 import '../theme.dart';
+import '../widgets/iso_kitchen_editor.dart';
 import 'product_details_screen.dart';
 
 /// Design studio (b20): the generated kitchen broken into its elements.
@@ -67,6 +68,7 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
   late KitchenDesign _design;
   late PlanEditor _editor;
   bool _building = false;
+  bool _show3d = true; // the 3D layout editor is the headline view
   String? _stage;
 
   static const _stages = [
@@ -265,24 +267,48 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.4),
           ),
           const SizedBox(height: 12),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(14),
-            child: SizedBox(
-              width: double.infinity,
-              height: 170,
-              child: CustomPaint(
-                painter: KitchenElevationPainter(
-                    plan, _design, _editor.revision),
-              ),
-            ),
+          // 3D layout editor / 2D plan toggle (both pure CustomPaint -
+          // the one WebView stays full-screen per the device landmines)
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: true, label: Text('3D layout')),
+              ButtonSegment(value: false, label: Text('2D plan')),
+            ],
+            selected: {_show3d},
+            showSelectedIcon: false,
+            style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            onSelectionChanged: (v) => setState(() => _show3d = v.first),
           ),
           const SizedBox(height: 10),
-          _InteractivePlan(
-            plan: plan,
-            design: _design,
-            editor: _editor,
-            onEdited: _onPlanEdited,
-          ),
+          if (_show3d)
+            IsoKitchenEditor(
+              plan: plan,
+              design: _design,
+              editor: _editor,
+              onEdited: _onPlanEdited,
+            )
+          else ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: SizedBox(
+                width: double.infinity,
+                height: 170,
+                child: CustomPaint(
+                  painter: KitchenElevationPainter(
+                      plan, _design, _editor.revision),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _InteractivePlan(
+              plan: plan,
+              design: _design,
+              editor: _editor,
+              onEdited: _onPlanEdited,
+            ),
+          ],
           const SizedBox(height: 6),
           Row(
             children: [
@@ -291,8 +317,12 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  'S = sink, O = oven, F = fridge. Chips snap to the '
-                  'counters with real clearances.',
+                  _show3d
+                      ? 'Drag the S/O/F chips anywhere. Hold a counter or '
+                          'the island to move it; tap a counter for resize '
+                          'handles, uppers and delete.'
+                      : 'S = sink, O = oven, F = fridge. Chips snap to the '
+                          'counters with real clearances.',
                   style: text.bodySmall?.copyWith(
                       color: Baytak.ink.withValues(alpha: 0.5),
                       height: 1.3),
@@ -786,8 +816,12 @@ class _InteractivePlanState extends State<_InteractivePlan> {
     if (kind == null) return;
     final wall = _targetWall;
     if (_targetValid && wall != null) {
-      // the structural drop: creates/extends/splits runs + normalizes
-      widget.editor.place(kind, wall, _targetU);
+      // the structural drop: creates/extends/splits runs + normalizes.
+      // checkpoint so the 3D editor's Undo also covers 2D edits.
+      widget.editor.checkpoint();
+      if (!widget.editor.place(kind, wall, _targetU)) {
+        widget.editor.undoDiscardLast();
+      }
     }
     setState(() {
       _dragging = null;
@@ -896,6 +930,7 @@ class KitchenElevationPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (plan.runs.isEmpty) return; // all counters deleted - nothing to draw
     final r = _primary;
     final wallColor = _rgb(design.wallFinish.rgb);
     final floorColor = _rgb(design.floorFinish.rgb);

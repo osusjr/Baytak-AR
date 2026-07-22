@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 23).
+(internal build counter in lib/theme.dart, currently 24).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -122,6 +122,21 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   every edit persists the plan + bumps editor.revision for repaint.
   Unit-tested in widget_test.dart - extend those tests when touching the
   drag rules.
+- 3D layout editor (b24): lib/widgets/iso_kitchen_editor.dart - the
+  Design studio's headline view; isometric CustomPaint scene (NO WebView)
+  where chips (S/O/F, eager grab), whole runs + island (long-press 260 ms
+  to lift - preserves page scroll), and resize handles are draggable;
+  release applies place()/moveRun()/moveIsland()/resizeRun() + normalize.
+  Panel-frozen decisions (do not regress): element-level TOPOLOGICAL
+  depth sort (scalar keys misorder L-corners), walls backface-culled
+  (near built walls = 0.14 m stubs), view rotation k is VIEW-SPACE ONLY
+  (plan data never rotated; k frozen on entry, changed only by the rotate
+  button), grab-anchored floor unprojection (parallax-free fridge drags),
+  re-wall drops mirror the run when target wall reads opposite on screen,
+  0.05 m quantization, two-layer painters (static scene keyed on
+  revision/selection; overlay repaints per drag tick via ValueNotifier).
+  PlanEditor extras: moveRun(mirror:)/resizeRun/removeRun/checkpoint/
+  undo (stack depth 8) + undoDiscardLast for failed gestures.
 - Analytics: lib/services/analytics.dart - on-device event counts
   (details/viewer/cart/generate/design/room_scene), screen in Profile.
 

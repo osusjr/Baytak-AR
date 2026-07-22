@@ -248,50 +248,92 @@ List<String> normalizePlan(LayoutPlan plan) {
     // pass B: classify sides; adjacent attachments fine, opposite pairs
     // and tight gaps get pushed out to a walkway
     // state per side: (kind 0=free 1=attached 2=tight, contact, front)
-    final state = <String, (int, double, double)>{};
-    for (final side in ['x0', 'x1', 'z0', 'z1']) {
-      (double, double, double)? nearest; // gap, contact, front
-      for (final ob in obstacles) {
-        double gap, contact, front;
-        if (side == 'x0' || side == 'x1') {
-          if (!(z0 < ob[3] && ob[1] < z1)) continue;
-          contact = math.min(z1, ob[3]) - math.max(z0, ob[1]);
-          if (side == 'x0' && ob[2] <= x0 + 1e-9) {
-            gap = x0 - ob[2];
-            front = ob[2];
-          } else if (side == 'x1' && ob[0] >= x1 - 1e-9) {
-            gap = ob[0] - x1;
-            front = ob[0];
+    // front is null when the side faces nothing at all
+    final state = <String, (int, double, double?)>{};
+    void classify() {
+      for (final side in ['x0', 'x1', 'z0', 'z1']) {
+        (double, double, double)? nearest; // gap, contact, front
+        for (final ob in obstacles) {
+          double gap, contact, front;
+          if (side == 'x0' || side == 'x1') {
+            if (!(z0 < ob[3] && ob[1] < z1)) continue;
+            contact = math.min(z1, ob[3]) - math.max(z0, ob[1]);
+            if (side == 'x0' && ob[2] <= x0 + 1e-9) {
+              gap = x0 - ob[2];
+              front = ob[2];
+            } else if (side == 'x1' && ob[0] >= x1 - 1e-9) {
+              gap = ob[0] - x1;
+              front = ob[0];
+            } else {
+              continue;
+            }
           } else {
-            continue;
+            if (!(x0 < ob[2] && ob[0] < x1)) continue;
+            contact = math.min(x1, ob[2]) - math.max(x0, ob[0]);
+            if (side == 'z0' && ob[3] <= z0 + 1e-9) {
+              gap = z0 - ob[3];
+              front = ob[3];
+            } else if (side == 'z1' && ob[1] >= z1 - 1e-9) {
+              gap = ob[1] - z1;
+              front = ob[1];
+            } else {
+              continue;
+            }
           }
+          if (nearest == null || gap < nearest.$1) {
+            nearest = (gap, contact, front);
+          }
+        }
+        if (nearest == null) {
+          state[side] = (0, 0, null);
+        } else if (nearest.$1 < PlanNormalizer.attachEps) {
+          state[side] = (1, nearest.$2, nearest.$3);
+        } else if (nearest.$1 < PlanNormalizer.walkway) {
+          state[side] = (2, nearest.$2, nearest.$3);
         } else {
-          if (!(x0 < ob[2] && ob[0] < x1)) continue;
-          contact = math.min(x1, ob[2]) - math.max(x0, ob[0]);
-          if (side == 'z0' && ob[3] <= z0 + 1e-9) {
-            gap = z0 - ob[3];
-            front = ob[3];
-          } else if (side == 'z1' && ob[1] >= z1 - 1e-9) {
-            gap = ob[1] - z1;
-            front = ob[1];
-          } else {
-            continue;
-          }
+          state[side] = (0, nearest.$2, nearest.$3);
         }
-        if (nearest == null || gap < nearest.$1) {
-          nearest = (gap, contact, front);
-        }
-      }
-      if (nearest == null) {
-        state[side] = (0, 0, 0);
-      } else if (nearest.$1 < PlanNormalizer.attachEps) {
-        state[side] = (1, nearest.$2, nearest.$3);
-      } else if (nearest.$1 < PlanNormalizer.walkway) {
-        state[side] = (2, nearest.$2, nearest.$3);
-      } else {
-        state[side] = (0, nearest.$2, nearest.$3);
       }
     }
+
+    classify();
+
+    // a tight side TRANSLATES the island away when the opposite side is
+    // free (keeps the island's size - matters for presets and for drag
+    // edits); only shrink when there is nowhere to go. Returns whether it
+    // shifted - side states are STALE after a shift and must be
+    // recomputed (an x-shift changes which obstacles face the z sides).
+    bool translate(String loS, String hiS, bool xAxis) {
+      final lo = state[loS]!, hi = state[hiS]!;
+      final room = xAxis ? w : d;
+      final a0 = xAxis ? x0 : z0, a1 = xAxis ? x1 : z1;
+      double shift;
+      bool blocked;
+      if (lo.$1 == 2 && hi.$1 == 0) {
+        shift = (lo.$3! + PlanNormalizer.walkway) - a0;
+        blocked = a1 + shift > room ||
+            (hi.$3 != null && hi.$3! - (a1 + shift) < PlanNormalizer.walkway);
+      } else if (hi.$1 == 2 && lo.$1 == 0) {
+        shift = (hi.$3! - PlanNormalizer.walkway) - a1;
+        blocked = a0 + shift < 0 ||
+            (lo.$3 != null && (a0 + shift) - lo.$3! < PlanNormalizer.walkway);
+      } else {
+        return false;
+      }
+      if (blocked) return false; // fall through to the shrink pass
+      if (xAxis) {
+        x0 = a0 + shift;
+        x1 = a1 + shift;
+      } else {
+        z0 = a0 + shift;
+        z1 = a1 + shift;
+      }
+      return true;
+    }
+
+    if (translate('x0', 'x1', true)) classify();
+    if (translate('z0', 'z1', false)) classify();
+
     final demoted = <String>{};
     for (final pair in [('x0', 'x1'), ('z0', 'z1')]) {
       if (state[pair.$1]!.$1 == 1 && state[pair.$2]!.$1 == 1) {
@@ -299,19 +341,22 @@ List<String> normalizePlan(LayoutPlan plan) {
             state[pair.$1]!.$2 < state[pair.$2]!.$2 ? pair.$1 : pair.$2);
       }
     }
+
     for (final e in state.entries) {
       final push =
           e.value.$1 == 2 || (e.value.$1 == 1 && demoted.contains(e.key));
       if (!push) continue;
+      final front = e.value.$3;
+      if (front == null) continue;
       switch (e.key) {
         case 'x0':
-          x0 = e.value.$3 + PlanNormalizer.walkway;
+          x0 = front + PlanNormalizer.walkway;
         case 'x1':
-          x1 = e.value.$3 - PlanNormalizer.walkway;
+          x1 = front - PlanNormalizer.walkway;
         case 'z0':
-          z0 = e.value.$3 + PlanNormalizer.walkway;
+          z0 = front + PlanNormalizer.walkway;
         default:
-          z1 = e.value.$3 - PlanNormalizer.walkway;
+          z1 = front - PlanNormalizer.walkway;
       }
     }
 
