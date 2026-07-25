@@ -9,6 +9,7 @@ import 'package:baytak_ar/services/kitchen_design.dart';
 import 'package:baytak_ar/services/kitchen_generator.dart';
 import 'package:baytak_ar/services/plan_editor.dart';
 import 'package:baytak_ar/services/plan_normalizer.dart';
+import 'package:baytak_ar/services/saved_designs.dart';
 import 'package:baytak_ar/state/app_state.dart';
 import 'package:baytak_ar/theme.dart';
 import 'package:baytak_ar/widgets/iso_kitchen_editor.dart';
@@ -472,6 +473,57 @@ void main() {
       // flipped from 'end' to 'start'
       expect(south.fridge, 'start');
       expect(south.b - south.sinkAt!, closeTo(0.5, 0.1));
+    });
+  });
+
+  group('Saved designs + quote (b25)', () {
+    test('SavedDesign JSON round-trips plan, design and price', () async {
+      SharedPreferences.setMockInitialValues({});
+      final plan = const KitchenSpec(
+        widthM: 4.2,
+        depthM: 3.4,
+        layout: KitchenLayout.lShape,
+        island: true,
+      ).toPlan();
+      const design =
+          KitchenDesign(lower: 'sage_green', worktop: 'butcher_block');
+      final d = SavedDesign(
+        id: 'd1',
+        name: 'Abu Ahmad',
+        savedAt: DateTime(2026, 7, 22),
+        plan: plan,
+        design: design,
+        priceJd: estimatePrice(plan, design),
+      );
+      await SavedDesigns.add(d);
+      final loaded = await SavedDesigns.load();
+      expect(loaded.length, 1);
+      expect(loaded.first.name, 'Abu Ahmad');
+      expect(loaded.first.design.lower, 'sage_green');
+      expect(loaded.first.priceJd, d.priceJd);
+      expect(loaded.first.plan.runs.length, plan.runs.length);
+      await SavedDesigns.remove('d1');
+      expect(await SavedDesigns.load(), isEmpty);
+    });
+
+    test('estimatePrice matches the generator formula shape', () {
+      final plan = const KitchenSpec(
+        widthM: 4.0,
+        depthM: 3.0,
+        layout: KitchenLayout.single,
+        island: false,
+      ).toPlan();
+      const design = KitchenDesign();
+      final lm = plan.runs.fold<double>(0, (a, r) => a + r.length);
+      expect(
+          estimatePrice(plan, design),
+          ((lm * kRatePerRunMetre) * design.priceFactor / 10).round() * 10);
+      // price responds to finish level
+      const premium = KitchenDesign(worktop: 'marble_veined');
+      if (premium.priceFactor != design.priceFactor) {
+        expect(estimatePrice(plan, premium),
+            isNot(estimatePrice(plan, design)));
+      }
     });
   });
 

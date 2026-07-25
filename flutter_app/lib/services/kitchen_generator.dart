@@ -1014,6 +1014,22 @@ Future<void> _pruneGenerated(Directory dir, {required int keep}) async {
   }
 }
 
+/// Automatic price estimate (JOD) from run metres, island and finish
+/// level - the ONE formula behind the product card, the studio's quote
+/// breakdown and the saved-designs gallery, so they can never disagree.
+/// Rates are demo assumptions, stated as such in the quote UI.
+const kRatePerRunMetre = 920; // JOD per linear metre of cabinets
+const kIslandPrice = 650; // JOD flat for an island/peninsula
+
+int estimatePrice(LayoutPlan plan, KitchenDesign d) {
+  final lm = plan.runs.fold<double>(0, (a, r) => a + r.length);
+  return ((lm * kRatePerRunMetre + (plan.island != null ? kIslandPrice : 0)) *
+              d.priceFactor /
+              10)
+          .round() *
+      10;
+}
+
 Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
     {String source = 'your measurements', KitchenDesign? design}) async {
   final d = design ?? KitchenDesign.fromPalette(plan.palette);
@@ -1040,12 +1056,7 @@ Future<GeneratedKitchen> generateFromPlan(LayoutPlan plan,
   await file.writeAsBytes(bytes, flush: true);
   await _pruneGenerated(file.parent, keep: 8);
 
-  final lm = plan.runs.fold<double>(0, (a, r) => a + r.length);
-  final price = ((lm * 920 + (plan.island != null ? 650 : 0)) *
-              d.priceFactor /
-              10)
-          .round() *
-      10;
+  final price = estimatePrice(plan, d);
   final orbitR =
       (math.max(plan.widthM, plan.depthM) * 2.1).toStringAsFixed(1);
   final runsDesc = plan.runs

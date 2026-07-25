@@ -33,7 +33,19 @@ baytak_ar/
 └── docs/                 Isometric verification renders
 ```
 
-## New in Prototype v1 build 24
+## New in Prototype v1 build 25
+
+**The showroom loop closes: quotes + saved designs.** The Design studio
+now shows a live itemized **Estimate** (cabinet metres x rate, island,
+finish level - a salesperson can defend every line), with **Copy quote**
+(formatted text to the clipboard, ready for WhatsApp/SMS) and **Save
+design**. Saved kitchens - plan, finishes and price - live in
+Profile > **Saved designs**: reopen any customer's kitchen exactly where
+they left it, re-style, re-quote, or delete. One shared `estimatePrice()`
+drives the product card, the quote and the gallery so they can never
+disagree. Rates are demo assumptions and labeled as such in-app.
+
+## Build 24
 
 **The 3D layout editor - drag everything, on the model.** The Design
 studio now opens on an isometric 3D view of the generated kitchen, drawn
