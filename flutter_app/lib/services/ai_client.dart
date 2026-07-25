@@ -7,6 +7,7 @@ import 'package:image/image.dart' as img;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/demo_config.dart';
+import 'device_id.dart';
 
 /// One vision call against NVIDIA's FREE hosted models (build.nvidia.com,
 /// no card; rate-limited ~40 req/min - plenty for demos). v17 removed the
@@ -95,14 +96,37 @@ Future<String> _resolveKey(String define, String prefsKey) async {
   }
 }
 
+/// Production proxy URL: dart-define first, else the demo_config row
+/// cached by RemoteCatalog ('cfg_ai_proxy'). When set, every candidate
+/// call travels through the store's Edge Function and NO provider key is
+/// needed (or present) in the app.
+Future<String> _proxyUrl() =>
+    _resolveKey(DemoConfig.aiProxyUrl, 'cfg_ai_proxy');
+
 Future<List<_Candidate>> _candidates({bool text = false}) async {
+  final nvidiaModels = text ? aiTextModels : aiVisionModels;
+  final proxy = await _proxyUrl();
+  if (proxy.isNotEmpty && DemoConfig.supabaseAnonKey.isNotEmpty) {
+    // launch mode: full chain via the proxy, authenticated with the
+    // Supabase anon key (the gateway requires a valid JWT). The proxy
+    // rejects any model it cannot serve (400/501) and those fall through,
+    // and it only charges quota for BILLED calls, so listing the full
+    // chain costs nothing extra.
+    return [
+      _Candidate(proxy, DemoConfig.supabaseAnonKey, DemoConfig.openaiModel),
+      for (final m in nvidiaModels)
+        _Candidate(proxy, DemoConfig.supabaseAnonKey, m),
+      for (final m in aiGeminiModels)
+        _Candidate(proxy, DemoConfig.supabaseAnonKey, m),
+    ];
+  }
+
   final openai =
       await _resolveKey(DemoConfig.openaiApiKey, 'cfg_openai_key');
   final nvidia =
       await _resolveKey(DemoConfig.nvidiaApiKey, 'cfg_nvidia_key');
   final gemini =
       await _resolveKey(DemoConfig.geminiApiKey, 'cfg_gemini_key');
-  final nvidiaModels = text ? aiTextModels : aiVisionModels;
   return [
     // paid quality first when configured (GPT-5.6 is multimodal - the
     // same model serves the vision AND the reasoning chain)
@@ -134,15 +158,17 @@ Future<String> aiProviderLabel() async {
 String? aiLastAnsweredBy;
 
 String _friendlyModel(String model, String endpoint) {
-  if (endpoint == _openaiEndpoint) {
+  if (model.startsWith('gpt-')) {
     final tier = model.replaceFirst('gpt-', 'GPT-').split('-').map((p) {
       return p.isEmpty ? p : '${p[0].toUpperCase()}${p.substring(1)}';
     }).join(' ');
-    return '$tier (OpenAI, paid)';
+    final via = endpoint == _openaiEndpoint ? 'OpenAI, paid' : 'store proxy';
+    return '$tier ($via)';
   }
-  if (endpoint == _geminiEndpoint) return '$model (Google)';
+  if (model.startsWith('gemini-')) return '$model (Google)';
   final short = model.split('/').last;
-  return '$short (NVIDIA, free)';
+  final via = endpoint == _nvidiaEndpoint ? 'NVIDIA, free' : 'store proxy';
+  return '$short ($via)';
 }
 
 const aiNotConfiguredMessage =
@@ -300,6 +326,8 @@ Future<String> _chatCall(
   List<Map<String, dynamic>> Function(String model) messagesFor, {
   required int maxTokens,
 }) async {
+  final proxy = await _proxyUrl();
+  final device = proxy.isEmpty ? '' : await deviceId();
   // Every failure mode falls through to the next candidate: retired ids
   // (404), hung free-tier models (timeout - observed live), rate limits,
   // even a revoked key when a second provider is configured. Stop trying
@@ -312,7 +340,11 @@ Future<String> _chatCall(
   final clock = Stopwatch()..start();
   for (final c in candidates) {
     if (clock.elapsed > const Duration(seconds: 150)) break;
-    final openai = c.endpoint == _openaiEndpoint;
+    final viaProxy = c.endpoint == proxy && proxy.isNotEmpty;
+    // param quirks apply to GPT-5.x on EITHER path - the model prefix on
+    // the proxy path, and the OpenAI endpoint on the direct path (guards
+    // a non-gpt OPENAI_MODEL value too)
+    final openai = c.model.startsWith('gpt-') || c.endpoint == _openaiEndpoint;
     // reasoning models think before answering - give them headroom
     final budget =
         c.model.startsWith('qwen/') || c.model.startsWith('deepseek')
@@ -335,13 +367,34 @@ Future<String> _chatCall(
           'content-type': 'application/json',
           'accept': 'application/json',
           'authorization': 'Bearer ${c.key}',
+          if (viaProxy) 'apikey': c.key,
+          if (viaProxy && DemoConfig.licenseKey.isNotEmpty)
+            'x-license-key': DemoConfig.licenseKey,
+          if (viaProxy) 'x-device-id': device,
         },
         body: body,
-      ).timeout(Duration(seconds: openai ? 100 : 60));
+      ).timeout(Duration(seconds: (openai ? 100 : 60) + (viaProxy ? 15 : 0)));
     } on Exception catch (e) {
       lastCand = c;
       lastError = e;
       continue;
+    }
+    if (viaProxy && (attempt.statusCode == 402 || attempt.statusCode == 429)) {
+      // license/quota problems come from OUR proxy and every candidate
+      // hits the same proxy - no fallback can fix them, so stop early
+      // with the proxy's own (JSON) message instead of trying 5 more.
+      String msg;
+      try {
+        msg = '${(jsonDecode(attempt.body) as Map)['message'] ?? ''}';
+      } catch (_) {
+        msg = '';
+      }
+      throw AiClientException(msg.isNotEmpty
+          ? msg
+          : attempt.statusCode == 402
+              ? 'The store license is missing or deactivated. Contact '
+                  'Baytak support to activate this installation.'
+              : 'The daily AI limit has been reached. Try again tomorrow.');
     }
     if (attempt.statusCode == 200) {
       ok = attempt;

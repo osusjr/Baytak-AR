@@ -79,6 +79,7 @@ class RemoteCatalog {
       'nvidia_api_key': 'cfg_nvidia_key',
       'gemini_api_key': 'cfg_gemini_key',
       'openai_api_key': 'cfg_openai_key',
+      'ai_proxy_url': 'cfg_ai_proxy', // launch mode without a rebuild
     };
     final seen = <String>{};
     for (final r in rows) {

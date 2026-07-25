@@ -33,7 +33,27 @@ baytak_ar/
 └── docs/                 Isometric verification renders
 ```
 
-## New in Prototype v1 build 25
+## New in Prototype v1 build 26 - THE LAUNCH LAYER
+
+**No more keys in the app.** Build with `AI_PROXY_URL` and every AI call
+routes through the new `ai-proxy` Supabase Edge Function
+(`supabase/functions/ai-proxy/`): provider keys live in Supabase
+secrets, each store has a **license key** the proxy validates (kill
+switch included), and every device has a **daily AI quota**. The
+benchmark-ranked fallback chains still run client-side - each candidate
+simply travels through the proxy.
+
+**The store actually receives orders.** Checkout POSTs the order to the
+store's `orders` table (insert-only); offline orders queue on-device and
+deliver on the next launch. **Analytics upload too**: product-interest
+deltas sync to `analytics_events` on every launch - the store sees what
+customers preview, place in AR and buy, in the Supabase dashboard.
+
+**The whole launch procedure is written down**: `supabase/README.md` ->
+"LAUNCH PLAYBOOK" - backend setup per store (~30 min), the exact
+zero-keys build command, and how the store reads its data.
+
+## Build 25
 
 **The showroom loop closes: quotes + saved designs.** The Design studio
 now shows a live itemized **Estimate** (cabinet metres x rate, island,
@@ -205,10 +225,13 @@ the same OpenAI-style client works with paid keys - `gpt-5.4-mini`
 best value; Anthropic's `claude-haiku-4-5` ($1/$5 per MTok) needs a small
 client change (different API schema).
 
-**Going to production:** consumer builds must not embed provider keys.
-The seam is `visionCall()` in `lib/services/ai_client.dart` - point it at a
-Supabase Edge Function (or any small backend) that holds the key
-server-side. `supabase/README.md` spells out the model.
+**Going to production (b26: IMPLEMENTED):** build with
+`--dart-define=AI_PROXY_URL=...` and every AI call routes through the
+`ai-proxy` Supabase Edge Function - provider keys live in Supabase
+secrets, per-store license keys gate usage, and each device has a daily
+AI quota. Orders and analytics upload to the store's tables
+(insert-only, offline-safe). The full step-by-step launch procedure is
+in `supabase/README.md` -> "LAUNCH PLAYBOOK".
 
 ## See it in 60 seconds (no Flutter needed)
 

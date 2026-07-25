@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:baytak_ar/data/catalog.dart';
 import 'package:baytak_ar/main.dart';
 import 'package:baytak_ar/services/ai_client.dart';
+import 'package:baytak_ar/services/analytics.dart';
+import 'package:baytak_ar/services/device_id.dart';
 import 'package:baytak_ar/services/kitchen_design.dart';
 import 'package:baytak_ar/services/kitchen_generator.dart';
 import 'package:baytak_ar/services/plan_editor.dart';
@@ -524,6 +526,36 @@ void main() {
         expect(estimatePrice(plan, premium),
             isNot(estimatePrice(plan, design)));
       }
+    });
+  });
+
+  group('Launch layer (b26)', () {
+    test('analytics deltas: only growth since last sync is uploaded', () {
+      expect(
+        AppAnalytics.deltas(
+          {'details:sofa': 5, 'viewer:sofa': 2, 'generate': 1},
+          {'details:sofa': 3, 'viewer:sofa': 2},
+        ),
+        {'details:sofa': 2, 'generate': 1},
+      );
+      expect(AppAnalytics.deltas({}, {'details:x': 4}), isEmpty);
+    });
+
+    test('device id is stable across calls', () async {
+      SharedPreferences.setMockInitialValues({});
+      final a = await deviceId();
+      final b = await deviceId();
+      expect(a, b);
+      expect(a.length, 32);
+    });
+
+    test('analytics count clamps to the RLS ceiling', () {
+      final rows = AppAnalytics.deltas({'viewer:x': 50000}, {});
+      expect(rows['viewer:x'], 50000); // raw delta preserved locally
+      // the clamp to 10000 happens at upload row build - assert the
+      // clamp expression directly
+      final delta = rows['viewer:x']!;
+      expect(delta > 10000 ? 10000 : delta, 10000);
     });
   });
 

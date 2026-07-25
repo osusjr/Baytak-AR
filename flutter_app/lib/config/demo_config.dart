@@ -43,6 +43,19 @@ class DemoConfig {
   static const supabaseAnonKey =
       String.fromEnvironment('SUPABASE_ANON_KEY', defaultValue: '');
 
+  /// PRODUCTION MODE: URL of the deployed ai-proxy Edge Function
+  /// (https://xyz.functions.supabase.co/ai-proxy). When set, ALL AI calls
+  /// go through the proxy and NO provider key ships in the app - this is
+  /// the launch configuration. Also distributable via demo_config
+  /// ('ai_proxy_url' row) so demo phones can be switched without a
+  /// rebuild.
+  static const aiProxyUrl =
+      String.fromEnvironment('AI_PROXY_URL', defaultValue: '');
+
+  /// Per-store license key checked by the proxy (REQUIRE_LICENSE=true).
+  static const licenseKey =
+      String.fromEnvironment('LICENSE_KEY', defaultValue: '');
+
   static bool get supabaseConfigured =>
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
 }
