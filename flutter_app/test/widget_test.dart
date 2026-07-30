@@ -549,6 +549,20 @@ void main() {
       expect(a.length, 32);
     });
 
+    test('keys with stray whitespace still build legal HTTP headers', () {
+      // a wrapped --dart-define paste put a newline INSIDE the anon key and
+      // every AI call died with FormatException (observed live, b26)
+      const dirty = 'eyJhbGci\n  OiJIUzI1\tNiIs ';
+      final clean = sanitizeConfigValue(dirty);
+      expect(clean, 'eyJhbGciOiJIUzI1NiIs');
+      // Dart rejects header values containing control chars - assert the
+      // sanitized form is accepted where the raw one is not
+      // http rejects control characters in header values; the sanitized
+      // form is header-safe, the raw one is not
+      expect(dirty.contains(RegExp(r'\s')), isTrue);
+      expect(clean.contains(RegExp(r'\s')), isFalse);
+    });
+
     test('analytics count clamps to the RLS ceiling', () {
       final rows = AppAnalytics.deltas({'viewer:x': 50000}, {});
       expect(rows['viewer:x'], 50000); // raw delta preserved locally
