@@ -3,6 +3,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'screens/onboarding_screen.dart';
 import 'screens/root_shell.dart';
+import 'services/analytics.dart';
+import 'services/orders_sync.dart';
 import 'services/remote_catalog.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
@@ -30,6 +32,10 @@ Future<void> main() async {
   // Cloud catalogue (Supabase), when configured: fire-and-forget - the
   // bundled catalogue shows instantly and is swapped once the sync lands.
   RemoteCatalog.sync(state);
+  // b26 launch plumbing (all no-ops without Supabase, all offline-safe):
+  // upload analytics deltas + deliver orders the network refused earlier.
+  AppAnalytics.syncToCloud();
+  OrdersSync.retryPending();
 }
 
 class BaytakArApp extends StatelessWidget {

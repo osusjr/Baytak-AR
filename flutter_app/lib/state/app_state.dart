@@ -107,7 +107,9 @@ class AppState extends ChangeNotifier {
   // ---- orders ----
   DemoOrder placeOrder(int total) {
     final order = DemoOrder(
-      id: 'BA-${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
+      // full-precision millis - collides across devices, but the backend
+      // order id is made globally unique with the device id in OrdersSync
+      id: 'BA-${DateTime.now().millisecondsSinceEpoch}',
       placedAt: DateTime.now(),
       total: total,
       lines: Map.of(cart),

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/analytics.dart';
@@ -10,6 +11,7 @@ import '../services/kitchen_design.dart';
 import '../services/kitchen_generator.dart';
 import '../services/plan_editor.dart';
 import '../services/plan_normalizer.dart';
+import '../services/saved_designs.dart';
 import '../theme.dart';
 import '../widgets/iso_kitchen_editor.dart';
 import 'product_details_screen.dart';
@@ -153,6 +155,101 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
         ),
       );
     }
+  }
+
+  // -------------------------------------------------------- quote + save --
+  double get _runMetres =>
+      widget.plan.runs.fold<double>(0, (a, r) => a + r.length);
+
+  Widget _quoteLine(String label, double amount) {
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label,
+                style: text.bodySmall
+                    ?.copyWith(color: Baytak.ink.withValues(alpha: 0.7))),
+          ),
+          Text('${amount.round()} JD',
+              style:
+                  text.bodySmall?.copyWith(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  String _quoteText() {
+    final p = widget.plan;
+    final runsDesc = p.runs
+        .map((r) => '${r.wall.name} ${r.length.toStringAsFixed(1)} m'
+            '${r.sinkAt != null ? ' (sink)' : ''}'
+            '${r.rangeAt != null ? ' (oven)' : ''}'
+            '${r.fridge != null ? ' (fridge)' : ''}')
+        .join(', ');
+    return 'Baytak kitchen quote\n'
+        'Room: ${p.widthM.toStringAsFixed(2)} x '
+        '${p.depthM.toStringAsFixed(2)} m\n'
+        'Counters: $runsDesc\n'
+        '${p.island != null ? 'Island: ${p.island!.w.toStringAsFixed(1)} x ${p.island!.d.toStringAsFixed(1)} m\n' : ''}'
+        'Finish: ${_design.describe()}\n'
+        'Cabinet runs: ${_runMetres.toStringAsFixed(1)} m x '
+        '$kRatePerRunMetre JD = ${(_runMetres * kRatePerRunMetre).round()} JD\n'
+        '${p.island != null ? 'Island: $kIslandPrice JD\n' : ''}'
+        'Total estimate: ${estimatePrice(p, _design)} JD\n'
+        '(Automatic demo estimate - the store issues the final quote.)';
+  }
+
+  Future<void> _copyQuote() async {
+    await Clipboard.setData(ClipboardData(text: _quoteText()));
+    if (!mounted) return;
+    AppAnalytics.log('design', 'copy_quote');
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(
+          content: Text('Quote copied - paste it anywhere')));
+  }
+
+  Future<void> _saveDesign() async {
+    final ctrl = TextEditingController(
+        text: 'Kitchen ${DateTime.now().day}/${DateTime.now().month}');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save this design'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration:
+              const InputDecoration(labelText: 'Name (e.g. the customer)'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    await SavedDesigns.add(SavedDesign(
+      id: 'd${DateTime.now().millisecondsSinceEpoch}',
+      name: name,
+      savedAt: DateTime.now(),
+      plan: widget.plan,
+      design: _design,
+      priceJd: estimatePrice(widget.plan, _design),
+    ));
+    if (!mounted) return;
+    AppAnalytics.log('design', 'save_design');
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+          content: Text('"$name" saved - find it in Profile > '
+              'Saved designs')));
   }
 
   // ------------------------------------------------------------- widgets --
@@ -468,7 +565,73 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
         ],
       ),
 
-      // 5 - build
+      // 5 - live quote (itemized - a salesperson can defend every line)
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Estimate',
+              style: text.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          _quoteLine(
+              'Cabinet runs - ${_runMetres.toStringAsFixed(1)} m '
+              'x $kRatePerRunMetre JD',
+              _runMetres * kRatePerRunMetre),
+          if (plan.island != null)
+            _quoteLine(
+                'Island ${plan.island!.w.toStringAsFixed(1)} x '
+                '${plan.island!.d.toStringAsFixed(1)} m',
+                kIslandPrice.toDouble()),
+          if (_design.priceFactor != 1.0)
+            _quoteLine(
+                'Finish level (${worktops[_design.worktop]?.label ?? _design.worktop}) '
+                'x${_design.priceFactor.toStringAsFixed(2)}',
+                (_runMetres * kRatePerRunMetre +
+                        (plan.island != null ? kIslandPrice : 0)) *
+                    (_design.priceFactor - 1.0)),
+          const Divider(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: Text('Total estimate',
+                    style: text.bodyMedium
+                        ?.copyWith(fontWeight: FontWeight.w800)),
+              ),
+              Text('${estimatePrice(plan, _design)} JD',
+                  style: text.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800, color: Baytak.brass)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Automatic demo estimate from run length and finish - the '
+            'store issues the final quote.',
+            style: text.bodySmall?.copyWith(
+                color: Baytak.ink.withValues(alpha: 0.5), height: 1.3),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _saveDesign,
+                  icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                  label: const Text('Save design'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _copyQuote,
+                  icon: const Icon(Icons.copy_rounded, size: 18),
+                  label: const Text('Copy quote'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+
+      // 6 - build
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

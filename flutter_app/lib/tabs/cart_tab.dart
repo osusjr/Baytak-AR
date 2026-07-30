@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../config/demo_config.dart';
 import '../data/catalog.dart';
+import '../services/orders_sync.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/product_cards.dart';
@@ -262,6 +264,9 @@ class _TotalBar extends StatelessWidget {
                 child: FilledButton(
                   onPressed: () {
                     final order = app.placeOrder(total);
+                    // fire-and-forget to the store backend; queues and
+                    // retries on next launch if the network is down
+                    OrdersSync.push(order, customer: app.userName);
                     Navigator.of(ctx).pop();
                     showDialog<void>(
                       context: context,
@@ -269,9 +274,11 @@ class _TotalBar extends StatelessWidget {
                         icon: const Icon(Icons.check_circle_rounded,
                             color: Baytak.olive, size: 40),
                         title: const Text('Order placed'),
-                        content: Text(
-                            '${order.id} saved to your orders '
-                            '(demo - stored on this device).'),
+                        content: Text(DemoConfig.supabaseConfigured
+                            ? '${order.id} sent to the store and saved '
+                                'to your orders.'
+                            : '${order.id} saved to your orders '
+                                '(demo - stored on this device).'),
                         actions: [
                           TextButton(
                               onPressed: () => Navigator.of(dctx).pop(),

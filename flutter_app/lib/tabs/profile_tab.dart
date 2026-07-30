@@ -4,6 +4,7 @@ import '../data/catalog.dart';
 import '../screens/blueprint_screen.dart';
 import '../screens/design_studio_screen.dart';
 import '../screens/room_designer_screen.dart';
+import '../screens/saved_designs_screen.dart';
 import '../screens/scan_screen.dart';
 import '../screens/stores_screen.dart';
 import '../services/analytics.dart';
@@ -113,6 +114,13 @@ class ProfileTab extends StatelessWidget {
               Navigator.of(context)
                   .push(MaterialPageRoute(builder: (_) => studio));
             },
+          ),
+          _Row(
+            icon: Icons.bookmarks_rounded,
+            title: 'Saved designs',
+            subtitle: 'Every saved customer kitchen with its quote',
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => const SavedDesignsScreen())),
           ),
           _Row(
             icon: Icons.center_focus_strong_rounded,
