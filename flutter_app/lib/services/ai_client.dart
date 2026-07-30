@@ -86,15 +86,28 @@ class AiClientException implements Exception {
 
 /// Key resolution: build-time define first, then the key cached from the
 /// Supabase demo_config table (written by RemoteCatalog.sync).
+///
+/// Values are SANITIZED: a key or URL that picked up a newline, tab or
+/// stray space (a wrapped --dart-define paste, a copied cell, an editor
+/// that hard-wraps) would otherwise build an illegal HTTP header and fail
+/// every single call with an unactionable FormatException. Observed live
+/// on a Windows build where the anon key paste broke across lines.
+String sanitizeConfigValue(String v) => v.replaceAll(RegExp(r'\s+'), '');
+String _sanitize(String v) => sanitizeConfigValue(v);
+
 Future<String> _resolveKey(String define, String prefsKey) async {
-  if (define.isNotEmpty) return define;
+  final d = _sanitize(define);
+  if (d.isNotEmpty) return d;
   try {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString(prefsKey) ?? '').trim();
+    return _sanitize(prefs.getString(prefsKey) ?? '');
   } catch (_) {
     return '';
   }
 }
+
+/// The Supabase anon key as sent to the proxy (whitespace-stripped).
+String get _anonKey => _sanitize(DemoConfig.supabaseAnonKey);
 
 /// Production proxy URL: dart-define first, else the demo_config row
 /// cached by RemoteCatalog ('cfg_ai_proxy'). When set, every candidate
@@ -106,18 +119,16 @@ Future<String> _proxyUrl() =>
 Future<List<_Candidate>> _candidates({bool text = false}) async {
   final nvidiaModels = text ? aiTextModels : aiVisionModels;
   final proxy = await _proxyUrl();
-  if (proxy.isNotEmpty && DemoConfig.supabaseAnonKey.isNotEmpty) {
+  if (proxy.isNotEmpty && _anonKey.isNotEmpty) {
     // launch mode: full chain via the proxy, authenticated with the
     // Supabase anon key (the gateway requires a valid JWT). The proxy
     // rejects any model it cannot serve (400/501) and those fall through,
     // and it only charges quota for BILLED calls, so listing the full
     // chain costs nothing extra.
     return [
-      _Candidate(proxy, DemoConfig.supabaseAnonKey, DemoConfig.openaiModel),
-      for (final m in nvidiaModels)
-        _Candidate(proxy, DemoConfig.supabaseAnonKey, m),
-      for (final m in aiGeminiModels)
-        _Candidate(proxy, DemoConfig.supabaseAnonKey, m),
+      _Candidate(proxy, _anonKey, _sanitize(DemoConfig.openaiModel)),
+      for (final m in nvidiaModels) _Candidate(proxy, _anonKey, m),
+      for (final m in aiGeminiModels) _Candidate(proxy, _anonKey, m),
     ];
   }
 
@@ -131,7 +142,7 @@ Future<List<_Candidate>> _candidates({bool text = false}) async {
     // paid quality first when configured (GPT-5.6 is multimodal - the
     // same model serves the vision AND the reasoning chain)
     if (openai.isNotEmpty)
-      _Candidate(_openaiEndpoint, openai, DemoConfig.openaiModel),
+      _Candidate(_openaiEndpoint, openai, _sanitize(DemoConfig.openaiModel)),
     if (nvidia.isNotEmpty)
       for (final m in nvidiaModels) _Candidate(_nvidiaEndpoint, nvidia, m),
     // Gemini Flash handles both modalities - same chain either way
@@ -165,7 +176,9 @@ String _friendlyModel(String model, String endpoint) {
     final via = endpoint == _openaiEndpoint ? 'OpenAI, paid' : 'store proxy';
     return '$tier ($via)';
   }
-  if (model.startsWith('gemini-')) return '$model (Google)';
+  if (model.startsWith('gemini-')) {
+    return '$model (${endpoint == _geminiEndpoint ? 'Google' : 'store proxy'})';
+  }
   final short = model.split('/').last;
   final via = endpoint == _nvidiaEndpoint ? 'NVIDIA, free' : 'store proxy';
   return '$short ($via)';
@@ -368,8 +381,8 @@ Future<String> _chatCall(
           'accept': 'application/json',
           'authorization': 'Bearer ${c.key}',
           if (viaProxy) 'apikey': c.key,
-          if (viaProxy && DemoConfig.licenseKey.isNotEmpty)
-            'x-license-key': DemoConfig.licenseKey,
+          if (viaProxy && _sanitize(DemoConfig.licenseKey).isNotEmpty)
+            'x-license-key': _sanitize(DemoConfig.licenseKey),
           if (viaProxy) 'x-device-id': device,
         },
         body: body,

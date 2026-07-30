@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Store build script with real keys - never commit (copy from build_store.example.ps1)
+build_store.ps1
