@@ -153,8 +153,13 @@ def _regrow_pass(plan):
             r["b"] = min(r["b"], max(ob, lim))
 
         # ---- grow-back (undo a fridge/corner trim) ---------------------
-        grew_a = r["a"] > oa + 1e-9
-        grew_b = r["b"] < ob - 1e-9
+        # fridge guard mirrors shrink-back: a bound anchoring a fridge
+        # never grows, or the "immovable" fridge would slide along the
+        # wall with it (e.g. a split's left half once its right half is
+        # deleted). When the fridge leaves, the mark clears and the
+        # grow-back (and split merge-back) proceed normally.
+        grew_a = r["a"] > oa + 1e-9 and r.get("fridge") != "start"
+        grew_b = r["b"] < ob - 1e-9 and r.get("fridge") != "end"
         if not (grew_a or grew_b):
             continue
         saved = (r["a"], r["b"])
@@ -206,17 +211,26 @@ def normalize_plan(plan):
     notes = []
     w, d = plan["w"], plan["d"]
 
-    # ---- 0. regrow toward remembered bounds (b28, silent) ----------------
+    # ---- 0a. sweep ghost auto runs BEFORE regrow (b28 ordering) ----------
+    # an editor-created run whose appliance moved away is already doomed;
+    # sweeping it first lets its trimmed neighbours regrow in the SAME
+    # normalize call that removes it (sweeping after regrow made the
+    # restore land one normalize late and broke idempotence)
+    kept0 = []
+    for r in plan["runs"]:
+        if r.get("auto") and r.get("sinkAt") is None and \
+                r.get("rangeAt") is None and not r.get("fridge"):
+            notes.append("removed auto run left behind by a moved appliance")
+        else:
+            kept0.append(r)
+    plan["runs"] = kept0
+
+    # ---- 0b. regrow toward remembered bounds (b28, silent) ---------------
     _regrow_pass(plan)
 
     # ---- 1. clamp, drop degenerates, merge same-wall overlaps ------------
     runs = []
     for r in plan["runs"]:
-        if r.get("auto") and r.get("sinkAt") is None and \
-                r.get("rangeAt") is None and not r.get("fridge"):
-            # editor-created run whose appliance moved away
-            notes.append("removed auto run left behind by a moved appliance")
-            continue
         m = axis_max(r["wall"], w, d)
         r["a"] = min(max(r["a"], 0.02), m - 0.02)
         r["b"] = min(max(r["b"], 0.02), m - 0.02)
@@ -671,6 +685,40 @@ def case_split_fridge_present():
     return p
 
 
+def case_ghost_blocker():
+    """b28 review fix: a trimmed run whose blocker is a DOOMED ghost auto
+    run (appliance already moved away). The sweep must run before regrow,
+    so the restore happens in the SAME normalize that removes the ghost."""
+    return {
+        "w": 3.6, "d": 3.0,
+        "runs": [
+            # ghost: editor-created for a sink that has since left
+            {"wall": "north", "a": 0.02, "b": 1.52, "sinkAt": None,
+             "rangeAt": None, "fridge": None, "uppers": True, "auto": True},
+            # west run was trimmed to clear the ghost's corner
+            {"wall": "west", "a": 0.67, "b": 2.9, "sinkAt": 1.6,
+             "rangeAt": None, "fridge": None, "uppers": True,
+             "origA": 0.1, "origB": 2.9},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_split_half_gone():
+    """b28 review fix: split left half (fridge='end' at the seam, orig
+    spanning the pre-split run) whose right half the user DELETED. The
+    fridge anchors b - grow-back must not slide it into the freed space."""
+    return {
+        "w": 4.6, "d": 3.2,
+        "runs": [
+            {"wall": "south", "a": 0.1, "b": 3.0, "sinkAt": 1.0,
+             "rangeAt": None, "fridge": "end", "uppers": True,
+             "origA": 0.1, "origB": 4.5},
+        ],
+        "island": None, "windows": [],
+    }
+
+
 def main():
     out = Path(__file__).resolve().parent / "normalizer_out"
     out.mkdir(exist_ok=True)
@@ -687,6 +735,8 @@ def main():
         "full_regrow": case_full_regrow(),
         "split_restore": case_split_restore(),
         "split_fridge_present": case_split_fridge_present(),
+        "ghost_blocker": case_ghost_blocker(),
+        "split_half_gone": case_split_half_gone(),
     }
     failures = 0
     for name, plan in cases.items():
@@ -764,6 +814,17 @@ def main():
         "holds the seam"
     assert abs(p["runs"][0]["b"] - 3.0) < 1e-6, \
         "left half must not grow through its own fridge seam"
+    p = cases["ghost_blocker"]
+    assert len(p["runs"]) == 1, "ghost auto run must be swept"
+    r = p["runs"][0]
+    assert abs(r["a"] - 0.1) < 1e-6, \
+        "trimmed run must regrow in the SAME normalize that sweeps the " \
+        f"ghost (a={r['a']})"
+    p = cases["split_half_gone"]
+    r = p["runs"][0]
+    assert abs(r["b"] - 3.0) < 1e-6, \
+        f"fridge-anchored end must not slide into freed space (b={r['b']})"
+    assert r["fridge"] == "end", "fridge must stay where the user put it"
 
     # ---- idempotence: a second normalize must be a silent no-op ---------
     for name, plan in cases.items():

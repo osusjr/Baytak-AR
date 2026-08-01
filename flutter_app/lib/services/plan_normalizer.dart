@@ -153,8 +153,13 @@ void _regrowPass(LayoutPlan plan) {
     }
 
     // ---- grow-back (undo a fridge/corner trim) -----------------------
-    final grewA = r.a > oa + 1e-9;
-    final grewB = r.b < ob - 1e-9;
+    // fridge guard mirrors shrink-back: a bound anchoring a fridge never
+    // grows, or the "immovable" fridge would slide along the wall with
+    // it (e.g. a split's left half once its right half is deleted). When
+    // the fridge leaves, the mark clears and grow-back (and the split
+    // merge-back) proceed normally.
+    final grewA = r.a > oa + 1e-9 && r.fridge != 'start';
+    final grewB = r.b < ob - 1e-9 && r.fridge != 'end';
     if (!grewA && !grewB) continue;
     final savedA = r.a, savedB = r.b;
     // tentative growth toward orig, stopping at same-wall neighbours
@@ -204,18 +209,25 @@ List<String> normalizePlan(LayoutPlan plan) {
   final notes = <String>[];
   final w = plan.widthM, d = plan.depthM;
 
-  // ---- 0. regrow toward remembered bounds (b28, silent) -----------------
+  // ---- 0a. sweep ghost auto runs BEFORE regrow (b28 ordering) -----------
+  // an editor-created run whose appliance moved away is already doomed;
+  // sweeping it first lets its trimmed neighbours regrow in the SAME
+  // normalize call that removes it (sweeping after regrow made the
+  // restore land one normalize late and broke idempotence)
+  plan.runs.removeWhere((r) {
+    final ghost = r.auto && !r.hasAppliance;
+    if (ghost) {
+      notes.add('removed the cabinets added for a moved appliance');
+    }
+    return ghost;
+  });
+
+  // ---- 0b. regrow toward remembered bounds (b28, silent) ----------------
   _regrowPass(plan);
 
   // ---- 1. clamp, drop degenerates, merge same-wall overlaps -------------
   final kept = <RunPlan>[];
   for (final r in plan.runs) {
-    if (r.auto && !r.hasAppliance) {
-      // an editor-created run whose appliance moved away: remove it so
-      // ghost cabinets never pile up around the kitchen
-      notes.add('removed the cabinets added for a moved appliance');
-      continue;
-    }
     final m = _axisMax(r.wall, w, d);
     r.a = r.a.clamp(0.02, m - 0.02).toDouble();
     r.b = r.b.clamp(0.02, m - 0.02).toDouble();

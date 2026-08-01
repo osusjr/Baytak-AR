@@ -752,6 +752,45 @@ void main() {
       expect(r.b, closeTo(2.5, 1e-6));
     });
 
+    test('ghost auto blocker: trimmed neighbour regrows in the SAME '
+        'normalize that sweeps the ghost (review fix)', () {
+      final ghost = RunPlan(
+          wall: Wall.north, a: 0.02, b: 1.52, uppers: true, auto: true);
+      final west = RunPlan(
+          wall: Wall.west,
+          a: 0.67,
+          b: 2.9,
+          sinkAt: 1.6,
+          uppers: true,
+          origA: 0.1,
+          origB: 2.9);
+      final plan = room([ghost, west], w: 3.6, d: 3.0);
+      final notes = normalizePlan(plan);
+      expect(plan.runs, hasLength(1));
+      expect(west.a, closeTo(0.1, 1e-6));
+      expect(notes, isNotEmpty);
+      // and idempotent: a second normalize is a silent no-op
+      expect(normalizePlan(plan), isEmpty);
+      expect(west.a, closeTo(0.1, 1e-6));
+    });
+
+    test('fridge-anchored end never regrows into freed space '
+        '(review fix)', () {
+      final left = RunPlan(
+          wall: Wall.south,
+          a: 0.1,
+          b: 3.0,
+          sinkAt: 1.0,
+          fridge: 'end',
+          uppers: true,
+          origA: 0.1,
+          origB: 4.5);
+      final plan = room([left], w: 4.6, d: 3.2);
+      normalizePlan(plan);
+      expect(left.b, closeTo(3.0, 1e-6));
+      expect(left.fridge, 'end'); // the fridge stays where the user put it
+    });
+
     test('orig memory survives the JSON round-trip', () {
       final r = RunPlan(
           wall: Wall.west,
@@ -835,6 +874,55 @@ Here you go:
           '{"reply":"ok","plan":{"width_m":0.0,"depth_m":0.0,"runs":[]}}');
       expect(r.plan, isNull);
       expect(r.reply, 'ok');
+    });
+
+    test('partial design merges onto the current one (review fix)', () {
+      const base = KitchenDesign(
+          lower: 'navy_blue',
+          upper: 'white_satin',
+          worktop: 'butcher_block',
+          hardware: 'black');
+      final r = DesignChatSession.parseReply(
+          '{"reply":"lighter floor","design":{"floor":"light_oak"}}',
+          base: base);
+      expect(r.design!.floor, 'light_oak'); // the change
+      expect(r.design!.lower, 'navy_blue'); // kept, not reset to default
+      expect(r.design!.worktop, 'butcher_block');
+      expect(r.design!.hardware, 'black');
+    });
+
+    test('AI plan bounds are a deliberate edit: orig rebases, echoed '
+        'orig keys are ignored (review fix)', () {
+      final r = DesignChatSession.parseReply('''
+{"reply":"ok","plan":{"width_m":3.6,"depth_m":3.0,"runs":[
+  {"wall":"north","from_m":0.5,"to_m":3.0,"uppers":true,
+   "orig_a":0.1,"orig_b":3.5,"auto":true}],
+ "island":{"present":false},"windows":[],
+ "palette":"warm_walnut","summary":"s"}}''');
+      final run = r.plan!.runs.single;
+      expect(run.origA, closeTo(run.a, 1e-6));
+      expect(run.origB, closeTo(run.b, 1e-6));
+      expect(run.auto, isFalse);
+    });
+
+    test('state sent to the model never leaks internal fields '
+        '(review fix)', () {
+      final plan = LayoutPlan(widthM: 4.0, depthM: 3.0, runs: [
+        RunPlan(
+            wall: Wall.north,
+            a: 0.67,
+            b: 3.0,
+            uppers: true,
+            auto: true,
+            origA: 0.1,
+            origB: 3.0),
+      ]);
+      final j = DesignChatSession.modelFacingPlanJson(plan);
+      final rj = (j['runs'] as List).single as Map;
+      expect(rj.containsKey('orig_a'), isFalse);
+      expect(rj.containsKey('orig_b'), isFalse);
+      expect(rj.containsKey('auto'), isFalse);
+      expect(rj['from_m'], closeTo(0.67, 1e-6)); // real fields intact
     });
 
     test('vocabulary carries every real option id', () {

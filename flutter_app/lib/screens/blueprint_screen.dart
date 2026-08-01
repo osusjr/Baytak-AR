@@ -140,11 +140,20 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
     return (plan, false);
   }
 
-  SnackBar _cachedSnack(void Function() rescan) => SnackBar(
+  /// [rescan] == null hides the action: the one-tap path has already
+  /// pushed the Design studio, and a re-scan running invisibly behind it
+  /// (spending a credit with zero feedback, then pushing a SECOND
+  /// studio) is worse than pointing at the Analyze button instead.
+  SnackBar _cachedSnack(void Function()? rescan) => SnackBar(
         duration: const Duration(seconds: 6),
-        content: const Text('Loaded your saved scan of this blueprint - '
-            'instant, no AI credit used'),
-        action: SnackBarAction(label: 'Re-scan with AI', onPressed: rescan),
+        content: Text(rescan != null
+            ? 'Loaded your saved scan of this blueprint - instant, no AI '
+                'credit used'
+            : 'Loaded your saved scan - instant, no AI credit used. Use '
+                '"Analyze blueprint" for a fresh AI reading.'),
+        action: rescan == null
+            ? null
+            : SnackBarAction(label: 'Re-scan with AI', onPressed: rescan),
       );
 
   Future<void> _analyze({bool force = false}) async {
@@ -162,7 +171,10 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(fromCache
-            ? _cachedSnack(() => _analyze(force: true))
+            // the snackbar outlives route pops - guard the state
+            ? _cachedSnack(() {
+                if (mounted) _analyze(force: true);
+              })
             : SnackBar(
                 content: Text(
                     'AI read ${plan.runs.length} run(s)'
@@ -211,7 +223,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(fromCache
-            ? _cachedSnack(() => _designOneTap(force: true))
+            ? _cachedSnack(null)
             : SnackBar(
                 content: Text('AI chose a ${KitchenDesign.presetLabels[p.palette] ?? p.palette} '
                     'look${by == null ? '' : ' (answered by $by)'} - '

@@ -59,9 +59,11 @@ The "design" object picks one option id per element, e.g.
  "worktop":"white_quartz","wall":"warm_white","floor":"light_oak",
  "splash":"white_subway","hardware":"brass","handle":"bar","door":"shaker"}.
 ${designVocabulary()}
-When the customer shows a materials/colour photo, map what you see to the
-CLOSEST options above and say what you matched ("your cabinets look like
-navy blue with brass handles"). Do not invent option ids.
+A partial "design" is fine: elements you leave out keep their current
+values. When the customer shows a materials/colour photo, map what you
+see to the CLOSEST options above and say what you matched ("your
+cabinets look like navy blue with brass handles"). Do not invent option
+ids.
 
 The "plan" object uses this schema:
 $planJsonSchema
@@ -93,6 +95,28 @@ class DesignChatSession {
 
   bool get hasPlan => plan != null;
 
+  /// True once the CONVERSATION produced a plan (vs. one it was merely
+  /// seeded with) - the studio uses it to decide whether opening the
+  /// result is a fresh generation worth snapshotting as "the original".
+  bool generatedPlan = false;
+
+  /// The plan as shown to the MODEL: internal control fields stripped.
+  /// orig_a/orig_b drive the regrow pass and 'auto' drives the ghost
+  /// sweep - a model echoing them back (very common LLM behaviour) would
+  /// smuggle stale memory into its own edit and the normalizer would
+  /// promptly "restore" bounds the model meant to change. Public for
+  /// unit tests.
+  static Map<String, dynamic> modelFacingPlanJson(LayoutPlan p) {
+    final j = p.toJson();
+    for (final r in (j['runs'] as List)) {
+      (r as Map)
+        ..remove('orig_a')
+        ..remove('orig_b')
+        ..remove('auto');
+    }
+    return j;
+  }
+
   /// Sends one user turn. [imageParts] are prebuilt via [aiImagePart]
   /// (max 2 per message keeps the request under the proxy's body cap).
   Future<DesignChatReply> send(String text,
@@ -100,7 +124,7 @@ class DesignChatSession {
     final state = StringBuffer('CURRENT STATE\n');
     state.writeln(plan == null
         ? 'plan: none yet'
-        : 'plan: ${jsonEncode(plan!.toJson())}');
+        : 'plan: ${jsonEncode(modelFacingPlanJson(plan!))}');
     state.writeln(design == null
         ? 'design: app defaults'
         : 'design: ${design!.encode()}');
@@ -132,25 +156,36 @@ class DesignChatSession {
       vision: true,
     );
 
-    final parsed = parseReply(raw);
+    final parsed = parseReply(raw, base: design);
 
-    // remember the turn (text-only echo, never the image bytes)
+    // remember the turn (text-only echo, never the image bytes; clipped
+    // so a degraded raw model dump can never bloat every later request
+    // toward the proxy's body cap)
     history
-      ..add({'role': 'user', 'content': userNote})
-      ..add({'role': 'assistant', 'content': parsed.reply});
+      ..add({'role': 'user', 'content': _clip(userNote)})
+      ..add({'role': 'assistant', 'content': _clip(parsed.reply)});
     while (history.length > _historyKeep) {
       history.removeAt(0);
     }
 
-    if (parsed.plan != null) plan = parsed.plan;
+    if (parsed.plan != null) {
+      plan = parsed.plan;
+      generatedPlan = true;
+    }
     if (parsed.design != null) design = parsed.design;
     return parsed;
   }
 
+  static String _clip(String s, [int max = 2000]) =>
+      s.length <= max ? s : '${s.substring(0, max)}...';
+
   /// Parses the model JSON contract; a malformed answer degrades to a
-  /// plain chat reply instead of an error (unit-tested).
+  /// plain chat reply instead of an error. [base] is the session's
+  /// current design: a PARTIAL design object from the model (a very
+  /// common LLM shortcut - "just the cabinets changed") merges onto it
+  /// instead of resetting every unmentioned element to app defaults.
   /// Public for unit tests.
-  static DesignChatReply parseReply(String raw) {
+  static DesignChatReply parseReply(String raw, {KitchenDesign? base}) {
     Map<String, dynamic>? j;
     try {
       j = jsonDecode(extractJsonObject(raw)) as Map<String, dynamic>;
@@ -161,22 +196,37 @@ class DesignChatSession {
     LayoutPlan? plan;
     final pj = j['plan'];
     if (pj is Map<String, dynamic>) {
-      try {
-        final p = LayoutPlan.fromJson(pj);
-        // same echo guard as the blueprint parser: a schema echo comes
-        // back with the example's 0.0 dimensions
-        if (p.widthM >= 1.0 && p.depthM >= 1.0 && p.runs.isNotEmpty) {
-          normalizePlan(p);
-          if (p.runs.isNotEmpty) plan = p;
-        }
-      } catch (_) {/* keep plan null - reply still shows */}
+      // echo guard on the RAW values, like the blueprint parser - after
+      // fromJson the dimensions are already clamped into [2,9] and the
+      // guard could never fire
+      double rawNum(dynamic v) =>
+          (v is num) ? v.toDouble() : double.tryParse('$v') ?? 0;
+      if (rawNum(pj['width_m']) >= 1.0 && rawNum(pj['depth_m']) >= 1.0) {
+        try {
+          final p = LayoutPlan.fromJson(pj);
+          if (p.runs.isNotEmpty) {
+            // an AI-authored bound is a deliberate edit: rebase the orig
+            // memory so the regrow pass can never "restore" a layout the
+            // model (or an echoed stale orig_* key) just changed
+            for (final r in p.runs) {
+              r.rebaseOrig();
+              r.auto = false;
+            }
+            normalizePlan(p);
+            if (p.runs.isNotEmpty) plan = p;
+          }
+        } catch (_) {/* keep plan null - reply still shows */}
+      }
     }
 
     KitchenDesign? design;
     final dj = j['design'];
     if (dj is Map<String, dynamic>) {
       try {
-        design = KitchenDesign.fromJson(dj);
+        design = KitchenDesign.fromJson({
+          if (base != null) ...base.toJson(),
+          ...dj,
+        });
       } catch (_) {/* defensive - fromJson already falls back per field */}
     }
 

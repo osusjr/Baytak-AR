@@ -757,17 +757,21 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
       appBar: AppBar(
         title: const Text('Design studio'),
         actions: [
+          // disabled while building: _build() ends by pushing the
+          // details screen and must not land it on top of another route
           IconButton(
             tooltip: 'Chat with the AI designer',
             icon: const Icon(Icons.chat_bubble_outline),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => DesignChatScreen(
-                    seedPlan: widget.plan, seedDesign: _design))),
+            onPressed: _building
+                ? null
+                : () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => DesignChatScreen(
+                        seedPlan: widget.plan, seedDesign: _design))),
           ),
           IconButton(
             tooltip: 'Back to the original design',
             icon: const Icon(Icons.settings_backup_restore),
-            onPressed: _restoreOriginal,
+            onPressed: _building ? null : _restoreOriginal,
           ),
         ],
       ),

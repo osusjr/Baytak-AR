@@ -33,17 +33,25 @@ class _Bubble {
   _Bubble.user(this.text, {this.photos = 0})
       : mine = true,
         plan = null,
-        design = null,
+        planSnap = null,
+        designSnap = null,
         answeredBy = null;
-  _Bubble.ai(this.text, {this.plan, this.design, this.answeredBy})
+  _Bubble.ai(this.text,
+      {this.plan, this.planSnap, this.designSnap, this.answeredBy})
       : mine = false,
         photos = 0;
 
   final bool mine;
   final String text;
   final int photos;
+
+  /// The plan THIS reply carried (drives the mini preview), and the full
+  /// session state right after this reply (drives the studio button) -
+  /// a design-only reply still opens the seeded/earlier plan, and an old
+  /// bubble opens exactly what its preview shows, not the newest state.
   final LayoutPlan? plan;
-  final KitchenDesign? design;
+  final LayoutPlan? planSnap;
+  final KitchenDesign? designSnap;
   final String? answeredBy;
 }
 
@@ -122,7 +130,10 @@ class _DesignChatScreenState extends State<DesignChatScreen> {
       if (!mounted) return;
       setState(() => _bubbles.add(_Bubble.ai(reply.reply,
           plan: reply.plan,
-          design: reply.design,
+          planSnap: reply.plan != null || reply.design != null
+              ? _session.plan
+              : null,
+          designSnap: _session.design,
           answeredBy: aiLastAnsweredBy)));
     } catch (e) {
       if (!mounted) return;
@@ -143,18 +154,21 @@ class _DesignChatScreenState extends State<DesignChatScreen> {
     });
   }
 
-  void _openStudio() {
-    final plan = _session.plan;
-    if (plan == null) return;
+  void _openStudio(LayoutPlan plan, KitchenDesign? design) {
     // the studio mutates its plan in place - hand it a COPY so the chat
     // keeps its own state if the user comes back and keeps talking
-    final copy =
-        LayoutPlan.fromJson(jsonDecode(jsonEncode(plan.toJson())) as Map<String, dynamic>);
+    final copy = LayoutPlan.fromJson(
+        jsonDecode(jsonEncode(plan.toJson())) as Map<String, dynamic>);
     Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => DesignStudioScreen(
               plan: copy,
-              initial: _session.design,
+              initial: design,
               source: 'your chat with the AI designer',
+              // only a plan the CONVERSATION produced is a fresh
+              // generation; a finishes-only hop from a studio-seeded
+              // chat must not overwrite the stored "Original"
+              freshOrigin:
+                  _session.generatedPlan || widget.seedPlan == null,
             )));
   }
 
@@ -333,10 +347,10 @@ class _DesignChatScreenState extends State<DesignChatScreen> {
                 ),
               ),
             ],
-            if (b.plan != null || b.design != null) ...[
+            if (b.planSnap != null) ...[
               const SizedBox(height: 8),
               FilledButton.tonalIcon(
-                onPressed: _openStudio,
+                onPressed: () => _openStudio(b.planSnap!, b.designSnap),
                 icon: const Icon(Icons.view_in_ar, size: 18),
                 label: const Text('Open in design studio'),
               ),
