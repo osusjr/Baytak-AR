@@ -107,11 +107,105 @@ bool _trimRunToClear(RunPlan r, double blkA, double blkB) {
   return true;
 }
 
+/// b28 pass 0 (SILENT - no notes): runs remember their original bounds
+/// (RunPlan.origA/origB, set when the plan is born and rebased only by a
+/// deliberate user move/resize). Appliance-driven changes are therefore
+/// reversible:
+///  - a run EXTENDED to host a dropped sink/oven shrinks back toward its
+///    orig once the appliance leaves (appliances still on the run clamp
+///    the shrink so they never fall off);
+///  - a run TRIMMED clear of a fridge/corner regrows toward its orig once
+///    the blocker leaves, limited by the very same corner-clearance rules
+///    (so pass 2 finds nothing to re-trim and the pass is idempotent).
+/// Validated in tools/plan_normalizer_proto.py (_regrow_pass) - keep in
+/// sync.
+void _regrowPass(LayoutPlan plan) {
+  final w = plan.widthM, d = plan.depthM;
+  for (final r in plan.runs) {
+    if (r.auto) continue;
+    final m = _axisMax(r.wall, w, d);
+    final oa = r.origA.clamp(0.02, m - 0.02).toDouble();
+    final ob = r.origB.clamp(0.02, m - 0.02).toDouble();
+
+    // ---- shrink-back (undo an appliance-driven extension) ------------
+    // the 0.05 slack mirrors the editor's extend branch so a hosted
+    // appliance keeps a hair more than edgeMargin and re-parses never
+    // drop it
+    if (r.a < oa - 1e-9 && r.fridge != 'start') {
+      var lim = oa;
+      if (r.sinkAt != null) {
+        lim = math.min(lim, r.sinkAt! - PlanNormalizer.edgeMargin - 0.05);
+      }
+      if (r.rangeAt != null) {
+        lim = math.min(lim, r.rangeAt! - PlanNormalizer.edgeMargin - 0.05);
+      }
+      r.a = math.max(r.a, math.min(oa, lim));
+    }
+    if (r.b > ob + 1e-9 && r.fridge != 'end') {
+      var lim = ob;
+      if (r.sinkAt != null) {
+        lim = math.max(lim, r.sinkAt! + PlanNormalizer.edgeMargin + 0.05);
+      }
+      if (r.rangeAt != null) {
+        lim = math.max(lim, r.rangeAt! + PlanNormalizer.edgeMargin + 0.05);
+      }
+      r.b = math.min(r.b, math.max(ob, lim));
+    }
+
+    // ---- grow-back (undo a fridge/corner trim) -----------------------
+    final grewA = r.a > oa + 1e-9;
+    final grewB = r.b < ob - 1e-9;
+    if (!grewA && !grewB) continue;
+    final savedA = r.a, savedB = r.b;
+    // tentative growth toward orig, stopping at same-wall neighbours
+    // (touching is fine - the merge pass unifies plain touches, and a
+    // touch at a fridge seam is exactly the split geometry)
+    var ta = grewA ? oa : r.a;
+    var tb = grewB ? ob : r.b;
+    for (final q in plan.runs) {
+      if (identical(q, r) || q.wall != r.wall) continue;
+      if (q.b <= r.a + 0.01) ta = math.max(ta, q.b);
+      if (q.a >= r.b - 0.01) tb = math.min(tb, q.a);
+    }
+    r.a = ta;
+    r.b = tb;
+    // silent corner re-trim: the pass-2 rules verbatim, so growth never
+    // creates an overlap pass 2 would have to fix noisily
+    var ok = true;
+    for (final q in plan.runs) {
+      if (identical(q, r) || !ok) continue;
+      if (_horizontal(r.wall) == _horizontal(q.wall)) continue;
+      if (!_rectsOverlap(_runRect(r, w, d), _runRect(q, w, d))) continue;
+      final frQ = _fridgeRect(q, w, d);
+      final frR = _fridgeRect(r, w, d);
+      if (frQ != null && _rectsOverlap(_runRect(r, w, d), frQ)) {
+        final nearOrigin = q.wall == Wall.north || q.wall == Wall.west;
+        ok = nearOrigin
+            ? _trimRunToClear(r, 0.0, PlanNormalizer.clearFridge)
+            : _trimRunToClear(r, m - PlanNormalizer.clearFridge, m);
+      } else if (frR != null && _rectsOverlap(_runRect(q, w, d), frR)) {
+        // q yields in the real corner pass
+      } else if (!_horizontal(r.wall)) {
+        ok = q.wall == Wall.north
+            ? _trimRunToClear(r, 0.0, PlanNormalizer.clearCounter)
+            : _trimRunToClear(r, d - PlanNormalizer.clearCounter, d);
+      }
+    }
+    if (!ok) {
+      r.a = savedA;
+      r.b = savedB;
+    }
+  }
+}
+
 /// Normalizes [plan] in place; returns human-readable fix notes (empty
 /// when the plan was already buildable).
 List<String> normalizePlan(LayoutPlan plan) {
   final notes = <String>[];
   final w = plan.widthM, d = plan.depthM;
+
+  // ---- 0. regrow toward remembered bounds (b28, silent) -----------------
+  _regrowPass(plan);
 
   // ---- 1. clamp, drop degenerates, merge same-wall overlaps -------------
   final kept = <RunPlan>[];
@@ -153,6 +247,18 @@ List<String> normalizePlan(LayoutPlan plan) {
       prev.rangeAt ??= r.rangeAt;
       prev.fridge ??= r.fridge;
       prev.uppers = prev.uppers || r.uppers;
+      // orig memory (b28): union the origs of NON-AUTO participants so a
+      // restored merge remembers the full original span; an auto
+      // extension merging into original cabinets contributes nothing
+      // (its span must remain shrinkable-away once the appliance leaves).
+      // If only one side is non-auto, its memory wins.
+      if (prev.auto && !r.auto) {
+        prev.origA = r.origA;
+        prev.origB = r.origB;
+      } else if (prev.auto == r.auto) {
+        prev.origA = math.min(prev.origA, r.origA);
+        prev.origB = math.max(prev.origB, r.origB);
+      }
       // a merge containing ANY original cabinets is no longer disposable
       prev.auto = prev.auto && r.auto;
       notes.add('merged overlapping cabinets on the ${r.wall.name} wall');

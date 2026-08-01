@@ -111,7 +111,9 @@ class PlanEditor {
             rangeAt: r.rangeAt,
             fridge: r.fridge,
             uppers: r.uppers,
-            auto: r.auto)
+            auto: r.auto,
+            origA: r.origA,
+            origB: r.origB)
     ];
     final isl = plan.island;
     final island = isl == null
@@ -175,6 +177,9 @@ class PlanEditor {
       run.b += shift;
       if (run.sinkAt != null) run.sinkAt = run.sinkAt! + shift;
       if (run.rangeAt != null) run.rangeAt = run.rangeAt! + shift;
+      // a deliberate user move sets a new baseline - the regrow pass
+      // must restore toward WHERE THE USER PUT IT, not the old spot
+      run.rebaseOrig();
       moved = run;
     } else {
       // wall is final on RunPlan - replace with a re-walled copy,
@@ -266,6 +271,9 @@ class PlanEditor {
       if (hi - lo < PlanNormalizer.minRun - 1e-9) return false;
       run.b = hi;
     }
+    // a deliberate resize sets a new baseline (otherwise the regrow pass
+    // would immediately undo the user's shrink)
+    run.rebaseOrig();
     normalizePlan(plan);
     if (!plan.runs.contains(run)) {
       _restore(saved);
