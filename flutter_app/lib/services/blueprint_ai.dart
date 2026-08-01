@@ -69,6 +69,11 @@ Cover, with measurements:
 Write a numbered list. Numbers in metres with two decimals.
 ''';
 
+/// Public aliases so the b28 design chat shares ONE schema/coordinate
+/// definition with the blueprint pipeline - they must never drift apart.
+const planJsonSchema = _schema;
+const planCoordSpec = _coords;
+
 const _schema = '''
 Schema (all lengths in metres, numbers only):
 {

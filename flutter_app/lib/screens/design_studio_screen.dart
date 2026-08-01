@@ -14,6 +14,7 @@ import '../services/plan_normalizer.dart';
 import '../services/saved_designs.dart';
 import '../theme.dart';
 import '../widgets/iso_kitchen_editor.dart';
+import 'design_chat_screen.dart';
 import 'product_details_screen.dart';
 
 /// Design studio (b20): the generated kitchen broken into its elements.
@@ -30,11 +31,19 @@ class DesignStudioScreen extends StatefulWidget {
     required this.plan,
     this.initial,
     this.source = 'your measurements',
+    this.freshOrigin = true,
   });
 
   final LayoutPlan plan;
   final KitchenDesign? initial;
   final String source;
+
+  /// b28: when true (every NEW generation - AI scan, manual measurements,
+  /// AI chat, opening a saved design) the incoming plan+design are stored
+  /// as THE ORIGINAL, so the "Original" action can always return to the
+  /// first generated model without another AI scan. restoreLast() passes
+  /// false - reopening yesterday's session must not overwrite its origin.
+  final bool freshOrigin;
 
   /// Restores the last edited plan (or falls back to the demo K-01 spec)
   /// so the studio can be opened directly from the Profile tab.
@@ -52,7 +61,10 @@ class DesignStudioScreen extends StatefulWidget {
     }
     final design = KitchenDesign.tryDecode(prefs.getString('kitchen_design_v1'));
     return DesignStudioScreen(
-        plan: plan, initial: design, source: 'the saved plan');
+        plan: plan,
+        initial: design,
+        source: 'the saved plan',
+        freshOrigin: false);
   }
 
   static LayoutPlan _demoPlan() => const KitchenSpec(
@@ -88,6 +100,7 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
     normalizePlan(widget.plan);
     _editor = PlanEditor(widget.plan);
     _persist();
+    _saveOrigin();
   }
 
   Future<void> _persist() async {
@@ -95,6 +108,71 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
     await prefs.setString('kitchen_design_v1', _design.encode());
     await prefs.setString(
         'last_plan_v1', jsonEncode(widget.plan.toJson()));
+  }
+
+  /// b28: snapshot the pristine plan+design ONCE per generation, so the
+  /// user can always return to the first generated model for free (no
+  /// second AI scan - the reported "I have to spend another credit to get
+  /// my original back" problem).
+  Future<void> _saveOrigin() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!widget.freshOrigin && prefs.getString('origin_plan_v1') != null) {
+      return; // reopening an old session keeps its original
+    }
+    await prefs.setString(
+        'origin_plan_v1', jsonEncode(widget.plan.toJson()));
+    await prefs.setString('origin_design_v1', _design.encode());
+  }
+
+  Future<void> _restoreOriginal() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('origin_plan_v1');
+    LayoutPlan? plan;
+    try {
+      if (raw != null) {
+        plan = LayoutPlan.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+        if (plan.runs.isEmpty) plan = null;
+      }
+    } catch (_) {
+      plan = null;
+    }
+    if (plan == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('No original design stored yet - generate one '
+              'from a blueprint or measurements first.')));
+      return;
+    }
+    final design =
+        KitchenDesign.tryDecode(prefs.getString('origin_design_v1'));
+    if (!mounted) return;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Back to the original?'),
+        content: const Text(
+            'This restores the first generated layout and finishes. Your '
+            'current edits here are replaced (saved designs are kept).'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Keep editing')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Restore original')),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+    // a fresh screen instead of mutating in place: widthM/depthM are
+    // final, and the origin may pre-date this screen's plan object
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
+        builder: (_) => DesignStudioScreen(
+              plan: plan!,
+              initial: design,
+              source: 'the original generated design',
+              freshOrigin: false,
+            )));
   }
 
   void _update(KitchenDesign next, String element) {
@@ -676,7 +754,27 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
     ];
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Design studio')),
+      appBar: AppBar(
+        title: const Text('Design studio'),
+        actions: [
+          // disabled while building: _build() ends by pushing the
+          // details screen and must not land it on top of another route
+          IconButton(
+            tooltip: 'Chat with the AI designer',
+            icon: const Icon(Icons.chat_bubble_outline),
+            onPressed: _building
+                ? null
+                : () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => DesignChatScreen(
+                        seedPlan: widget.plan, seedDesign: _design))),
+          ),
+          IconButton(
+            tooltip: 'Back to the original design',
+            icon: const Icon(Icons.settings_backup_restore),
+            onPressed: _building ? null : _restoreOriginal,
+          ),
+        ],
+      ),
       body: ListView.separated(
         padding: const EdgeInsets.fromLTRB(20, 6, 20, 28),
         itemCount: cards.length,

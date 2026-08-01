@@ -114,20 +114,123 @@ def _trim_run_to_clear(r, blk_a, blk_b):
     return True
 
 
+def _regrow_pass(plan):
+    """b28 pass 0 (SILENT - no notes): runs remember their original bounds
+    (origA/origB, set when the plan is born and rebased only by deliberate
+    user move/resize). Appliance-driven changes are therefore reversible:
+     - a run EXTENDED to host a dropped sink/oven shrinks back toward its
+       orig once the appliance leaves (appliances still on the run clamp
+       the shrink so they never fall off);
+     - a run TRIMMED clear of a fridge/corner regrows toward its orig once
+       the blocker leaves, limited by the very same corner-clearance rules
+       (so pass 2 finds nothing to re-trim and the pass is idempotent).
+    Runs without orig memory (legacy JSON, hand-built tests) are skipped.
+    """
+    w, d = plan["w"], plan["d"]
+    for r in plan["runs"]:
+        oa, ob = r.get("origA"), r.get("origB")
+        if oa is None or ob is None or r.get("auto"):
+            continue
+        m = axis_max(r["wall"], w, d)
+        oa = min(max(oa, 0.02), m - 0.02)
+        ob = min(max(ob, 0.02), m - 0.02)
+
+        # ---- shrink-back (undo an appliance-driven extension) ----------
+        # the 0.05 slack mirrors the editor's extend branch so a hosted
+        # appliance keeps a hair more than EDGE_MARGIN and re-parses
+        # never drop it
+        if r["a"] < oa - 1e-9 and r.get("fridge") != "start":
+            lim = oa
+            for k in ("sinkAt", "rangeAt"):
+                if r.get(k) is not None:
+                    lim = min(lim, r[k] - EDGE_MARGIN - 0.05)
+            r["a"] = max(r["a"], min(oa, lim))
+        if r["b"] > ob + 1e-9 and r.get("fridge") != "end":
+            lim = ob
+            for k in ("sinkAt", "rangeAt"):
+                if r.get(k) is not None:
+                    lim = max(lim, r[k] + EDGE_MARGIN + 0.05)
+            r["b"] = min(r["b"], max(ob, lim))
+
+        # ---- grow-back (undo a fridge/corner trim) ---------------------
+        # fridge guard mirrors shrink-back: a bound anchoring a fridge
+        # never grows, or the "immovable" fridge would slide along the
+        # wall with it (e.g. a split's left half once its right half is
+        # deleted). When the fridge leaves, the mark clears and the
+        # grow-back (and split merge-back) proceed normally.
+        grew_a = r["a"] > oa + 1e-9 and r.get("fridge") != "start"
+        grew_b = r["b"] < ob - 1e-9 and r.get("fridge") != "end"
+        if not (grew_a or grew_b):
+            continue
+        saved = (r["a"], r["b"])
+        # tentative growth toward orig, stopping at same-wall neighbours
+        # (touching is fine - the merge pass unifies plain touches, and a
+        # touch at a fridge seam is exactly the split geometry)
+        ta = oa if grew_a else r["a"]
+        tb = ob if grew_b else r["b"]
+        for q in plan["runs"]:
+            if q is r or q["wall"] != r["wall"]:
+                continue
+            if q["b"] <= r["a"] + 0.01:
+                ta = max(ta, q["b"])
+            if q["a"] >= r["b"] - 0.01:
+                tb = min(tb, q["a"])
+        r["a"], r["b"] = ta, tb
+        # silent corner re-trim: the pass-2 rules verbatim, so growth
+        # never creates an overlap pass 2 would have to fix noisily
+        ok = True
+        for q in plan["runs"]:
+            if q is r or not ok:
+                continue
+            horiz_r = r["wall"] in ("north", "south")
+            horiz_q = q["wall"] in ("north", "south")
+            if horiz_r == horiz_q:
+                continue
+            if not rects_overlap(run_rect(r, w, d), run_rect(q, w, d)):
+                continue
+            fr_q = fridge_rect(q, w, d)
+            fr_r = fridge_rect(r, w, d)
+            if fr_q and rects_overlap(run_rect(r, w, d), fr_q):
+                band = (0.0, CLEAR_FRIDGE) \
+                    if q["wall"] in ("north", "west") \
+                    else (m - CLEAR_FRIDGE, m)
+                ok = _trim_run_to_clear(r, *band)
+            elif fr_r and rects_overlap(run_rect(q, w, d), fr_r):
+                pass  # q yields in the real corner pass
+            elif not horiz_r:
+                band = (0.0, CLEAR_COUNTER) if q["wall"] == "north" \
+                    else (d - CLEAR_COUNTER, d)
+                ok = _trim_run_to_clear(r, *band)
+        if not ok:
+            r["a"], r["b"] = saved
+
+
 def normalize_plan(plan):
     """Mutates plan (proto format: w,d,runs[a,b,...],island,windows) into a
     buildable one. Returns a list of human-readable fix notes."""
     notes = []
     w, d = plan["w"], plan["d"]
 
-    # ---- 1. clamp, drop degenerates, merge same-wall overlaps ------------
-    runs = []
+    # ---- 0a. sweep ghost auto runs BEFORE regrow (b28 ordering) ----------
+    # an editor-created run whose appliance moved away is already doomed;
+    # sweeping it first lets its trimmed neighbours regrow in the SAME
+    # normalize call that removes it (sweeping after regrow made the
+    # restore land one normalize late and broke idempotence)
+    kept0 = []
     for r in plan["runs"]:
         if r.get("auto") and r.get("sinkAt") is None and \
                 r.get("rangeAt") is None and not r.get("fridge"):
-            # editor-created run whose appliance moved away
             notes.append("removed auto run left behind by a moved appliance")
-            continue
+        else:
+            kept0.append(r)
+    plan["runs"] = kept0
+
+    # ---- 0b. regrow toward remembered bounds (b28, silent) ---------------
+    _regrow_pass(plan)
+
+    # ---- 1. clamp, drop degenerates, merge same-wall overlaps ------------
+    runs = []
+    for r in plan["runs"]:
         m = axis_max(r["wall"], w, d)
         r["a"] = min(max(r["a"], 0.02), m - 0.02)
         r["b"] = min(max(r["b"], 0.02), m - 0.02)
@@ -153,8 +256,25 @@ def normalize_plan(plan):
             if not prev.get("fridge") and r.get("fridge"):
                 prev["fridge"] = r["fridge"]
             prev["uppers"] = prev.get("uppers", False) or r.get("uppers", False)
+            # orig memory (b28): union the origs of NON-AUTO participants
+            # so a restored merge remembers the full original span; an auto
+            # extension merging into original cabinets contributes nothing
+            # (its span must remain shrinkable-away once the appliance
+            # leaves). If only one side is non-auto, its memory wins.
+            p_auto, r_auto = prev.get("auto", False), r.get("auto", False)
+            po = (prev.get("origA"), prev.get("origB"))
+            ro = (r.get("origA"), r.get("origB"))
+            if p_auto and not r_auto:
+                keep = ro
+            elif r_auto and not p_auto:
+                keep = po
+            elif po[0] is not None and ro[0] is not None:
+                keep = (min(po[0], ro[0]), max(po[1], ro[1]))
+            else:
+                keep = po if po[0] is not None else ro
+            prev["origA"], prev["origB"] = keep
             # a merge containing ANY original cabinets is not disposable
-            prev["auto"] = prev.get("auto", False) and r.get("auto", False)
+            prev["auto"] = p_auto and r_auto
             notes.append(f"merged overlapping runs on {r['wall']}")
         else:
             merged.append(r)
@@ -485,6 +605,120 @@ def case_fridge_only():
     }
 
 
+def case_extension_shrinkback():
+    """b28: run extended by the editor to host a dropped oven; the oven has
+    since moved away. origA remembers the pre-extension start."""
+    return {
+        "w": 4.0, "d": 3.2,
+        "runs": [
+            {"wall": "north", "a": 0.25, "b": 3.5, "sinkAt": 2.5,
+             "rangeAt": None, "fridge": None, "uppers": True,
+             "origA": 1.5, "origB": 3.5},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_extension_occupied():
+    """b28: same extension but the oven is STILL at the extended end -
+    shrink-back must hold off (limited by the appliance margin)."""
+    p = case_extension_shrinkback()
+    p["runs"][0]["rangeAt"] = 0.7
+    return p
+
+
+def case_fridge_trim_regrow():
+    """b28: the fridge_corner case AFTER the fridge left the north run.
+    West run was trimmed to 0.82; with the fridge gone it may regrow, but
+    only to the plain-corner clearance (0.67) while the north run stays."""
+    return {
+        "w": 4.2, "d": 3.4,
+        "runs": [
+            {"wall": "north", "a": 0.1, "b": 4.1, "sinkAt": 1.2,
+             "rangeAt": 3.0, "fridge": None, "uppers": True,
+             "origA": 0.1, "origB": 4.1},
+            {"wall": "west", "a": 0.82, "b": 3.3, "sinkAt": None,
+             "rangeAt": None, "fridge": None, "uppers": True,
+             "origA": 0.1, "origB": 3.3},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_full_regrow():
+    """b28: trimmed west run whose north neighbour was deleted entirely -
+    nothing blocks any more, so it regrows to its full original span."""
+    return {
+        "w": 4.2, "d": 3.4,
+        "runs": [
+            {"wall": "west", "a": 0.82, "b": 3.3, "sinkAt": 1.6,
+             "rangeAt": None, "fridge": None, "uppers": True,
+             "origA": 0.1, "origB": 3.3},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_split_restore():
+    """b28: editor split a run around a mid-run fridge; the fridge has
+    since moved away (fridge mark cleared). The left half remembers the
+    full pre-split span - touch + merge must restore ONE original run."""
+    return {
+        "w": 4.6, "d": 3.2,
+        "runs": [
+            {"wall": "south", "a": 0.1, "b": 3.0, "sinkAt": 1.0,
+             "rangeAt": None, "fridge": None, "uppers": True,
+             "origA": 0.1, "origB": 4.5},
+            {"wall": "south", "a": 3.0, "b": 4.5, "sinkAt": None,
+             "rangeAt": None, "fridge": None, "uppers": True,
+             "origA": 3.0, "origB": 4.5},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_split_fridge_present():
+    """b28 guard: the SAME split while the fridge is still at the seam -
+    the halves must NOT merge and the left half must not grow."""
+    p = case_split_restore()
+    p["runs"][0]["fridge"] = "end"
+    return p
+
+
+def case_ghost_blocker():
+    """b28 review fix: a trimmed run whose blocker is a DOOMED ghost auto
+    run (appliance already moved away). The sweep must run before regrow,
+    so the restore happens in the SAME normalize that removes the ghost."""
+    return {
+        "w": 3.6, "d": 3.0,
+        "runs": [
+            # ghost: editor-created for a sink that has since left
+            {"wall": "north", "a": 0.02, "b": 1.52, "sinkAt": None,
+             "rangeAt": None, "fridge": None, "uppers": True, "auto": True},
+            # west run was trimmed to clear the ghost's corner
+            {"wall": "west", "a": 0.67, "b": 2.9, "sinkAt": 1.6,
+             "rangeAt": None, "fridge": None, "uppers": True,
+             "origA": 0.1, "origB": 2.9},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_split_half_gone():
+    """b28 review fix: split left half (fridge='end' at the seam, orig
+    spanning the pre-split run) whose right half the user DELETED. The
+    fridge anchors b - grow-back must not slide it into the freed space."""
+    return {
+        "w": 4.6, "d": 3.2,
+        "runs": [
+            {"wall": "south", "a": 0.1, "b": 3.0, "sinkAt": 1.0,
+             "rangeAt": None, "fridge": "end", "uppers": True,
+             "origA": 0.1, "origB": 4.5},
+        ],
+        "island": None, "windows": [],
+    }
+
+
 def main():
     out = Path(__file__).resolve().parent / "normalizer_out"
     out.mkdir(exist_ok=True)
@@ -495,6 +729,14 @@ def main():
         "four_walls": case_four_walls(),
         "fridge_corner": case_fridge_corner(),
         "fridge_only": case_fridge_only(),
+        "extension_shrinkback": case_extension_shrinkback(),
+        "extension_occupied": case_extension_occupied(),
+        "fridge_trim_regrow": case_fridge_trim_regrow(),
+        "full_regrow": case_full_regrow(),
+        "split_restore": case_split_restore(),
+        "split_fridge_present": case_split_fridge_present(),
+        "ghost_blocker": case_ghost_blocker(),
+        "split_half_gone": case_split_half_gone(),
     }
     failures = 0
     for name, plan in cases.items():
@@ -541,6 +783,59 @@ def main():
     p = cases["fridge_only"]
     assert any(r.get("fridge") for r in p["runs"]), \
         "fridge-only run must survive"
+
+    # ---- b28 regrow expectations ----------------------------------------
+    p = cases["extension_shrinkback"]
+    r = p["runs"][0]
+    assert abs(r["a"] - 1.5) < 1e-6, \
+        f"extension must shrink back to orig once the oven left (a={r['a']})"
+    p = cases["extension_occupied"]
+    r = p["runs"][0]
+    assert r["a"] <= 0.7 - EDGE_MARGIN + 1e-6, \
+        f"occupied extension must keep the oven inside (a={r['a']})"
+    p = cases["fridge_trim_regrow"]
+    west = next(r for r in p["runs"] if r["wall"] == "west")
+    assert abs(west["a"] - CLEAR_COUNTER) < 1e-6, \
+        f"west run must regrow to the plain-corner clearance (a={west['a']})"
+    p = cases["full_regrow"]
+    r = p["runs"][0]
+    assert abs(r["a"] - 0.1) < 1e-6 and abs(r["b"] - 3.3) < 1e-6, \
+        f"unblocked run must regrow to its full orig ({r['a']},{r['b']})"
+    p = cases["split_restore"]
+    assert len(p["runs"]) == 1, "split halves must merge back after the " \
+        f"fridge left ({len(p['runs'])} runs remain)"
+    r = p["runs"][0]
+    assert abs(r["a"] - 0.1) < 1e-6 and abs(r["b"] - 4.5) < 1e-6, \
+        f"merged run must span the original ({r['a']},{r['b']})"
+    assert r.get("origA") == 0.1 and r.get("origB") == 4.5, \
+        "merged run must keep the union of non-auto orig memory"
+    p = cases["split_fridge_present"]
+    assert len(p["runs"]) == 2, "halves must stay split while the fridge " \
+        "holds the seam"
+    assert abs(p["runs"][0]["b"] - 3.0) < 1e-6, \
+        "left half must not grow through its own fridge seam"
+    p = cases["ghost_blocker"]
+    assert len(p["runs"]) == 1, "ghost auto run must be swept"
+    r = p["runs"][0]
+    assert abs(r["a"] - 0.1) < 1e-6, \
+        "trimmed run must regrow in the SAME normalize that sweeps the " \
+        f"ghost (a={r['a']})"
+    p = cases["split_half_gone"]
+    r = p["runs"][0]
+    assert abs(r["b"] - 3.0) < 1e-6, \
+        f"fridge-anchored end must not slide into freed space (b={r['b']})"
+    assert r["fridge"] == "end", "fridge must stay where the user put it"
+
+    # ---- idempotence: a second normalize must be a silent no-op ---------
+    for name, plan in cases.items():
+        again = copy.deepcopy(plan)
+        second_notes = normalize_plan(again)
+        assert not second_notes, \
+            f"{name}: second normalize not silent: {second_notes}"
+        assert json.dumps(again, sort_keys=True) == \
+            json.dumps(plan, sort_keys=True), \
+            f"{name}: second normalize changed the plan"
+
     for name, plan in cases.items():
         assert not overlap_report(plan), f"{name} still overlaps"
     print("\nall expectations hold" if not failures else "\nFAILURES")

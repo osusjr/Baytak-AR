@@ -45,7 +45,10 @@ class RunPlan {
     this.fridge, // 'start' | 'end' | null
     this.uppers = false,
     this.auto = false,
-  });
+    double? origA,
+    double? origB,
+  })  : origA = origA ?? a,
+        origB = origB ?? b;
 
   final Wall wall;
   double a, b; // metres along the wall axis (x for N/S, z for E/W)
@@ -59,9 +62,23 @@ class RunPlan {
   /// auto cabinets must never outlive their reason to exist.
   bool auto;
 
+  /// b28 orig memory: the bounds this run had when the plan was born,
+  /// rebased only by a DELIBERATE user move/resize. Appliance-driven
+  /// changes (editor extension, fridge split, corner trim) leave it
+  /// untouched, so the normalizer's regrow pass can restore the run once
+  /// the appliance that forced the change moves away - the fix for
+  /// "cabinets never go back to the way they were".
+  double origA, origB;
+
   double get length => b - a;
 
   bool get hasAppliance => sinkAt != null || rangeAt != null || fridge != null;
+
+  /// Rebase the orig memory to the current bounds (deliberate user edit).
+  void rebaseOrig() {
+    origA = a;
+    origB = b;
+  }
 }
 
 class WindowPlan {
@@ -124,6 +141,8 @@ class LayoutPlan {
               'fridge': r.fridge,
               'uppers': r.uppers,
               if (r.auto) 'auto': true,
+              if ((r.origA - r.a).abs() > 1e-9) 'orig_a': r.origA,
+              if ((r.origB - r.b).abs() > 1e-9) 'orig_b': r.origB,
             }
         ],
         'island': island == null
@@ -184,6 +203,11 @@ class LayoutPlan {
         return p;
       }
 
+      double? orig(dynamic v) {
+        final p = numOf(v, -1, axisMax, -1);
+        return p < 0 ? null : p.clamp(0.02, axisMax - 0.02).toDouble();
+      }
+
       runs.add(RunPlan(
         wall: wall,
         a: a,
@@ -193,6 +217,8 @@ class LayoutPlan {
         fridge: hasFridge ? fr : null,
         uppers: r['uppers'] == true,
         auto: r['auto'] == true,
+        origA: orig(r['orig_a']),
+        origB: orig(r['orig_b']),
       ));
     }
 

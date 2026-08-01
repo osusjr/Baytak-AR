@@ -317,6 +317,33 @@ Future<String> visionCall({
   );
 }
 
+/// b28 multi-turn chat: pass a prebuilt OpenAI-style messages list
+/// (system/user/assistant; content is a string or a parts list carrying
+/// inline data-URI images from [aiImagePart]). Uses the vision chain when
+/// [vision] so an image-bearing turn reaches a model that can see; text
+/// refinement turns can run the (cheaper, benchmark-ranked) text chain.
+/// Same candidate fallback behaviour as [visionCall].
+Future<String> chatCall({
+  required List<Map<String, dynamic>> messages,
+  bool vision = true,
+  int maxTokens = 8192,
+}) async {
+  final candidates = await _candidates(text: !vision);
+  if (candidates.isEmpty) throw AiClientException(aiNotConfiguredMessage);
+  return _chatCall(candidates, (_) => messages, maxTokens: maxTokens);
+}
+
+/// Prepares a picked photo as an inline image_url part for [chatCall]:
+/// downscaled/re-encoded to the provider budget in a background isolate -
+/// the exact same path [visionCall] uses.
+Future<Map<String, dynamic>> aiImagePart(List<int> bytes) async {
+  final (prepared, mime) = await _prepareImage(bytes, 'image/jpeg');
+  return {
+    'type': 'image_url',
+    'image_url': {'url': 'data:$mime;base64,${base64Encode(prepared)}'},
+  };
+}
+
 /// Text-only call against the reasoning chain (stage 2 of the blueprint
 /// pipeline). Same fallback behaviour as [visionCall].
 Future<String> textCall({

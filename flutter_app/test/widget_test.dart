@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,9 +11,11 @@ import 'package:baytak_ar/services/analytics.dart';
 import 'package:baytak_ar/services/device_id.dart';
 import 'package:baytak_ar/services/kitchen_design.dart';
 import 'package:baytak_ar/services/kitchen_generator.dart';
+import 'package:baytak_ar/services/design_chat.dart';
 import 'package:baytak_ar/services/plan_editor.dart';
 import 'package:baytak_ar/services/plan_normalizer.dart';
 import 'package:baytak_ar/services/saved_designs.dart';
+import 'package:baytak_ar/services/scan_cache.dart';
 import 'package:baytak_ar/state/app_state.dart';
 import 'package:baytak_ar/theme.dart';
 import 'package:baytak_ar/widgets/iso_kitchen_editor.dart';
@@ -580,5 +584,361 @@ void main() {
         extractJsonObject('<think>hmm {not json}</think>Sure!\n'
             '```json\n{"a":{"b":"}"},"c":2}\n```\ntrailing words'),
         '{"a":{"b":"}"},"c":2}');
+  });
+
+  group('Regrow pass (b28) - cabinets go back', () {
+    LayoutPlan room(List<RunPlan> runs, {double w = 4.0, double d = 3.2}) =>
+        LayoutPlan(widthM: w, depthM: d, runs: runs);
+
+    test('extension shrinks back once the oven leaves', () {
+      final r = RunPlan(
+          wall: Wall.north,
+          a: 0.25,
+          b: 3.5,
+          sinkAt: 2.5,
+          uppers: true,
+          origA: 1.5,
+          origB: 3.5);
+      final plan = room([r]);
+      normalizePlan(plan);
+      expect(r.a, closeTo(1.5, 1e-6));
+      expect(r.b, closeTo(3.5, 1e-6));
+    });
+
+    test('occupied extension holds - the oven must stay inside', () {
+      final r = RunPlan(
+          wall: Wall.north,
+          a: 0.25,
+          b: 3.5,
+          rangeAt: 0.7,
+          sinkAt: 2.5,
+          uppers: true,
+          origA: 1.5,
+          origB: 3.5);
+      final plan = room([r]);
+      normalizePlan(plan);
+      expect(r.a, lessThanOrEqualTo(0.7 - PlanEditor.edgeMargin + 1e-6));
+      expect(r.rangeAt, isNotNull);
+    });
+
+    test('fridge-trimmed run regrows to plain-corner clearance', () {
+      final north = RunPlan(
+          wall: Wall.north, a: 0.1, b: 4.1, sinkAt: 1.2, rangeAt: 3.0,
+          uppers: true);
+      final west = RunPlan(
+          wall: Wall.west,
+          a: 0.82,
+          b: 3.3,
+          uppers: true,
+          origA: 0.1,
+          origB: 3.3);
+      final plan = room([north, west], w: 4.2, d: 3.4);
+      normalizePlan(plan);
+      expect(west.a, closeTo(PlanNormalizer.clearCounter, 1e-6));
+    });
+
+    test('unblocked trimmed run regrows to its full orig', () {
+      final west = RunPlan(
+          wall: Wall.west,
+          a: 0.82,
+          b: 3.3,
+          sinkAt: 1.6,
+          uppers: true,
+          origA: 0.1,
+          origB: 3.3);
+      final plan = room([west], w: 4.2, d: 3.4);
+      normalizePlan(plan);
+      expect(west.a, closeTo(0.1, 1e-6));
+      expect(west.b, closeTo(3.3, 1e-6));
+    });
+
+    test('fridge-split halves merge back after the fridge leaves', () {
+      final left = RunPlan(
+          wall: Wall.south,
+          a: 0.1,
+          b: 3.0,
+          sinkAt: 1.0,
+          uppers: true,
+          origA: 0.1,
+          origB: 4.5);
+      final right = RunPlan(
+          wall: Wall.south, a: 3.0, b: 4.5, uppers: true);
+      final plan = room([left, right], w: 4.6, d: 3.2);
+      normalizePlan(plan);
+      expect(plan.runs, hasLength(1));
+      expect(plan.runs.single.a, closeTo(0.1, 1e-6));
+      expect(plan.runs.single.b, closeTo(4.5, 1e-6));
+      expect(plan.runs.single.origA, closeTo(0.1, 1e-6));
+      expect(plan.runs.single.origB, closeTo(4.5, 1e-6));
+    });
+
+    test('halves stay split while the fridge holds the seam', () {
+      final left = RunPlan(
+          wall: Wall.south,
+          a: 0.1,
+          b: 3.0,
+          sinkAt: 1.0,
+          fridge: 'end',
+          uppers: true,
+          origA: 0.1,
+          origB: 4.5);
+      final right = RunPlan(
+          wall: Wall.south, a: 3.0, b: 4.5, uppers: true);
+      final plan = room([left, right], w: 4.6, d: 3.2);
+      normalizePlan(plan);
+      expect(plan.runs, hasLength(2));
+      expect(left.b, closeTo(3.0, 1e-6));
+    });
+
+    test('THE user story: oven away to a bare wall and back restores '
+        'the original layout exactly', () {
+      final original = RunPlan(
+          wall: Wall.north,
+          a: 0.5,
+          b: 3.5,
+          sinkAt: 1.2,
+          rangeAt: 2.6,
+          uppers: true);
+      final plan = room([original]);
+      final editor = PlanEditor(plan);
+
+      // move the oven to the bare south wall - an auto run appears
+      expect(editor.place(ApplianceKind.range, Wall.south, 2.0), isTrue);
+      expect(plan.runs, hasLength(2));
+      expect(original.rangeAt, isNull);
+      expect(original.a, closeTo(0.5, 1e-6)); // original untouched
+
+      // move it back onto the original run - the auto run must vanish
+      // and the original run must host the oven again
+      expect(editor.place(ApplianceKind.range, Wall.north, 2.6), isTrue);
+      expect(plan.runs, hasLength(1));
+      expect(identical(plan.runs.single, original), isTrue);
+      expect(original.a, closeTo(0.5, 1e-6));
+      expect(original.b, closeTo(3.5, 1e-6));
+      expect(original.rangeAt, closeTo(2.6, 0.06));
+    });
+
+    test('oven dropped NEAR the run end extends it; sending the oven '
+        'elsewhere shrinks the extension away', () {
+      final original = RunPlan(
+          wall: Wall.north,
+          a: 1.5,
+          b: 3.5,
+          sinkAt: 2.9,
+          uppers: true);
+      final plan = room([original]);
+      final editor = PlanEditor(plan);
+
+      // drop just past the start end, within extendReach: run extends
+      expect(editor.place(ApplianceKind.range, Wall.north, 1.0), isTrue);
+      expect(original.a, lessThan(1.5 - 1e-6));
+      expect(original.origA, closeTo(1.5, 1e-6)); // memory untouched
+
+      // send the oven to another wall - the extension shrinks back
+      expect(editor.place(ApplianceKind.range, Wall.south, 2.0), isTrue);
+      expect(original.a, closeTo(1.5, 1e-6));
+      expect(original.b, closeTo(3.5, 1e-6));
+      expect(original.sinkAt, closeTo(2.9, 1e-6));
+    });
+
+    test('deliberate resize rebases the memory - a user shrink sticks', () {
+      final r = RunPlan(wall: Wall.north, a: 0.5, b: 3.5, uppers: true);
+      final plan = room([r]);
+      final editor = PlanEditor(plan);
+      expect(editor.resizeRun(r, startEnd: false, v: 2.5), isTrue);
+      expect(r.b, closeTo(2.5, 1e-6));
+      expect(r.origB, closeTo(2.5, 1e-6));
+      normalizePlan(plan); // must NOT grow back to 3.5
+      expect(r.b, closeTo(2.5, 1e-6));
+    });
+
+    test('ghost auto blocker: trimmed neighbour regrows in the SAME '
+        'normalize that sweeps the ghost (review fix)', () {
+      final ghost = RunPlan(
+          wall: Wall.north, a: 0.02, b: 1.52, uppers: true, auto: true);
+      final west = RunPlan(
+          wall: Wall.west,
+          a: 0.67,
+          b: 2.9,
+          sinkAt: 1.6,
+          uppers: true,
+          origA: 0.1,
+          origB: 2.9);
+      final plan = room([ghost, west], w: 3.6, d: 3.0);
+      final notes = normalizePlan(plan);
+      expect(plan.runs, hasLength(1));
+      expect(west.a, closeTo(0.1, 1e-6));
+      expect(notes, isNotEmpty);
+      // and idempotent: a second normalize is a silent no-op
+      expect(normalizePlan(plan), isEmpty);
+      expect(west.a, closeTo(0.1, 1e-6));
+    });
+
+    test('fridge-anchored end never regrows into freed space '
+        '(review fix)', () {
+      final left = RunPlan(
+          wall: Wall.south,
+          a: 0.1,
+          b: 3.0,
+          sinkAt: 1.0,
+          fridge: 'end',
+          uppers: true,
+          origA: 0.1,
+          origB: 4.5);
+      final plan = room([left], w: 4.6, d: 3.2);
+      normalizePlan(plan);
+      expect(left.b, closeTo(3.0, 1e-6));
+      expect(left.fridge, 'end'); // the fridge stays where the user put it
+    });
+
+    test('orig memory survives the JSON round-trip', () {
+      final r = RunPlan(
+          wall: Wall.west,
+          a: 0.82,
+          b: 3.3,
+          uppers: true,
+          origA: 0.1,
+          origB: 3.3);
+      final plan = LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [r]);
+      final back = LayoutPlan.fromJson(
+          jsonDecode(jsonEncode(plan.toJson())) as Map<String, dynamic>);
+      expect(back.runs.single.origA, closeTo(0.1, 1e-6));
+      expect(back.runs.single.origB, closeTo(3.3, 1e-6));
+      // and a run whose orig equals its bounds writes no extra keys
+      final plain = RunPlan(wall: Wall.north, a: 1.0, b: 3.0);
+      final js = LayoutPlan(widthM: 4, depthM: 3, runs: [plain]).toJson();
+      final rj = (js['runs'] as List).single as Map;
+      expect(rj.containsKey('orig_a'), isFalse);
+      expect(rj.containsKey('orig_b'), isFalse);
+    });
+  });
+
+  group('Scan cache (b28) - no double AI spend', () {
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+    });
+
+    test('hash is stable and content-sensitive', () {
+      final a = ScanCache.hashBytes([1, 2, 3, 4]);
+      expect(ScanCache.hashBytes([1, 2, 3, 4]), a);
+      expect(ScanCache.hashBytes([1, 2, 3, 5]), isNot(a));
+      expect(a.length, 16);
+    });
+
+    test('stores and returns the plan for the same bytes', () async {
+      final bytes = List<int>.generate(64, (i) => i * 7 % 256);
+      final plan = LayoutPlan(widthM: 3.2, depthM: 3.76, runs: [
+        RunPlan(wall: Wall.west, a: 0.1, b: 2.74, uppers: true),
+      ]);
+      expect(await ScanCache.lookup(bytes), isNull);
+      await ScanCache.store(bytes, plan);
+      final hit = await ScanCache.lookup(bytes);
+      expect(hit, isNotNull);
+      expect(hit!.widthM, closeTo(3.2, 1e-6));
+      expect(hit.runs.single.b, closeTo(2.74, 1e-6));
+      expect(await ScanCache.lookup([9, 9, 9]), isNull);
+    });
+  });
+
+  group('Design chat (b28)', () {
+    test('parses the full reply contract', () {
+      final r = DesignChatSession.parseReply('''
+Here you go:
+```json
+{"reply":"A navy kitchen it is.",
+ "plan":{"width_m":3.6,"depth_m":3.0,"runs":[
+   {"wall":"north","from_m":0.1,"to_m":3.5,"sink_at_m":0.9,
+    "range_at_m":2.6,"fridge":null,"uppers":true}],
+  "island":{"present":false},"windows":[],
+  "palette":"dark_modern","summary":"one wall"},
+ "design":{"lower":"navy_blue","hardware":"brass"}}
+```''');
+      expect(r.reply, 'A navy kitchen it is.');
+      expect(r.plan, isNotNull);
+      expect(r.plan!.runs, hasLength(1));
+      expect(r.design, isNotNull);
+      expect(r.design!.lower, 'navy_blue');
+      expect(r.design!.hardware, 'brass');
+      expect(r.design!.worktop, 'basalt_quartz'); // default preserved
+    });
+
+    test('malformed answer degrades to a plain chat reply', () {
+      final r = DesignChatSession.parseReply('Sure! What size is the room?');
+      expect(r.plan, isNull);
+      expect(r.design, isNull);
+      expect(r.reply, contains('What size'));
+    });
+
+    test('schema echo (0x0 room) is rejected, reply survives', () {
+      final r = DesignChatSession.parseReply(
+          '{"reply":"ok","plan":{"width_m":0.0,"depth_m":0.0,"runs":[]}}');
+      expect(r.plan, isNull);
+      expect(r.reply, 'ok');
+    });
+
+    test('partial design merges onto the current one (review fix)', () {
+      const base = KitchenDesign(
+          lower: 'navy_blue',
+          upper: 'white_satin',
+          worktop: 'butcher_block',
+          hardware: 'black');
+      final r = DesignChatSession.parseReply(
+          '{"reply":"lighter floor","design":{"floor":"light_oak"}}',
+          base: base);
+      expect(r.design!.floor, 'light_oak'); // the change
+      expect(r.design!.lower, 'navy_blue'); // kept, not reset to default
+      expect(r.design!.worktop, 'butcher_block');
+      expect(r.design!.hardware, 'black');
+    });
+
+    test('AI plan bounds are a deliberate edit: orig rebases, echoed '
+        'orig keys are ignored (review fix)', () {
+      final r = DesignChatSession.parseReply('''
+{"reply":"ok","plan":{"width_m":3.6,"depth_m":3.0,"runs":[
+  {"wall":"north","from_m":0.5,"to_m":3.0,"uppers":true,
+   "orig_a":0.1,"orig_b":3.5,"auto":true}],
+ "island":{"present":false},"windows":[],
+ "palette":"warm_walnut","summary":"s"}}''');
+      final run = r.plan!.runs.single;
+      expect(run.origA, closeTo(run.a, 1e-6));
+      expect(run.origB, closeTo(run.b, 1e-6));
+      expect(run.auto, isFalse);
+    });
+
+    test('state sent to the model never leaks internal fields '
+        '(review fix)', () {
+      final plan = LayoutPlan(widthM: 4.0, depthM: 3.0, runs: [
+        RunPlan(
+            wall: Wall.north,
+            a: 0.67,
+            b: 3.0,
+            uppers: true,
+            auto: true,
+            origA: 0.1,
+            origB: 3.0),
+      ]);
+      final j = DesignChatSession.modelFacingPlanJson(plan);
+      final rj = (j['runs'] as List).single as Map;
+      expect(rj.containsKey('orig_a'), isFalse);
+      expect(rj.containsKey('orig_b'), isFalse);
+      expect(rj.containsKey('auto'), isFalse);
+      expect(rj['from_m'], closeTo(0.67, 1e-6)); // real fields intact
+    });
+
+    test('vocabulary carries every real option id', () {
+      final v = designVocabulary();
+      for (final id in [
+        ...cabinetFinishes.keys,
+        ...worktops.keys,
+        ...wallPaints.keys,
+        ...floorFinishes.keys,
+        ...backsplashes.keys,
+        ...hardwareFinishes.keys,
+        ...handleStyles.keys,
+        ...doorStyles.keys,
+      ]) {
+        expect(v, contains(id));
+      }
+    });
   });
 }

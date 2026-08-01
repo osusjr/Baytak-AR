@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 27).
+(internal build counter in lib/theme.dart, currently 28).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -51,14 +51,21 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
 - Plan normalizer: lib/services/plan_normalizer.dart (Python prototype
   tools/plan_normalizer_proto.py - run it after rule changes; constants
   FROZEN from it). Runs after AI parse (blueprint_ai), on studio entry and
-  after every drag edit: clamps/merges runs (runs touching at a fridge
-  seam stay separate), trims perpendicular runs clear of fridges
-  (fridge is immovable - "cabinets adjust"), E/W yields to N/S at plain
-  counter corners, island overlaps pulled to touching + attachments
-  allowed on adjacent sides only (opposite pair = room-bridging bar ->
-  shorter contact pushed to a 0.85 m walkway), island < 0.6 m after
-  shrinking is dropped (fixes the "counter covered the whole middle"
-  blueprint failure), appliances re-clamped.
+  after every drag edit: b28 pass 0 REGROW (silent - every run carries
+  origA/origB memory of its born bounds, rebased ONLY by deliberate user
+  moveRun/resizeRun; appliance-driven extensions shrink back and
+  fridge/corner trims regrow once the blocker leaves, collision-limited
+  by the same corner rules so the pass is idempotent - the fix for
+  "cabinets never go back when I move the oven away"), then
+  clamps/merges runs (runs touching at a fridge seam stay separate;
+  merges union the orig memory of non-auto participants), trims
+  perpendicular runs clear of fridges (fridge is immovable - "cabinets
+  adjust"), E/W yields to N/S at plain counter corners, island overlaps
+  pulled to touching + attachments allowed on adjacent sides only
+  (opposite pair = room-bridging bar -> shorter contact pushed to a
+  0.85 m walkway), island < 0.6 m after shrinking is dropped (fixes the
+  "counter covered the whole middle" blueprint failure), appliances
+  re-clamped.
 - Design system (v17): lib/services/kitchen_design.dart. KitchenDesign =
   one choice per element (lower/upper/island cabinet finishes, worktop,
   wall, floor, backsplash, hardware, handle bar/knob/none, door
@@ -139,6 +146,31 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   undo (stack depth 8) + undoDiscardLast for failed gestures.
 - Analytics: lib/services/analytics.dart - on-device event counts
   (details/viewer/cart/generate/design/room_scene), screen in Profile.
+- b28 money-savers: lib/services/scan_cache.dart - the first successful
+  AI reading of a blueprint is cached by IMAGE CONTENT (FNV-1a 64 over
+  the raw bytes, prefs 'scan_cache_v1', cap 12): re-analyzing the same
+  drawing is instant and free, with a "Re-scan with AI" snackbar action
+  to force a fresh call. Design studio stores the pristine generation in
+  'origin_plan_v1'/'origin_design_v1' (freshOrigin flag; restoreLast
+  passes false) - the app-bar "Original" action returns to the first
+  generated model WITHOUT an AI scan.
+- b28 AI designer chat: lib/services/design_chat.dart (pure logic) +
+  lib/screens/design_chat_screen.dart (NO WebView; mini top-down
+  CustomPaint preview per AI reply). Multi-turn: user sends room photos
+  + typed dimensions + material/colour photos; every AI reply is a JSON
+  contract {reply, plan?, design?} - plan uses the SAME schema as
+  blueprint_ai (public aliases planJsonSchema/planCoordSpec - never let
+  them drift), design ids come from designVocabulary() which is
+  GENERATED from the kitchen_design option tables. Replies are parsed
+  defensively (echo guard + normalizePlan; malformed JSON degrades to a
+  plain chat answer). Cost control: earlier photos are never re-sent
+  (text echoes only), current plan/design travel as compact state, max
+  2 photos per message (proxy body cap). ai_client additions: chatCall
+  (messages list, vision flag picks the chain) + aiImagePart (same
+  downscale isolate as visionCall). Entries: blueprint screen button +
+  design studio app-bar chat icon (seeds the session with the current
+  plan+design). Honesty line in-chat: parametric render, not photoreal;
+  each message costs one AI credit.
 
 ## Device-specific landmines (test phone: Galaxy S9+, Android 10, Mali-G72)
 - Impeller is DISABLED in AndroidManifest (EnableImpeller=false): Mali

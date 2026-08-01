@@ -10,7 +10,9 @@ import '../services/analytics.dart';
 import '../services/blueprint_ai.dart';
 import '../services/kitchen_design.dart';
 import '../services/kitchen_generator.dart';
+import '../services/scan_cache.dart';
 import '../theme.dart';
+import 'design_chat_screen.dart';
 import 'design_studio_screen.dart';
 
 /// Blueprint studio v17: photo -> AI analysis (free NVIDIA-hosted vision
@@ -123,24 +125,61 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
   }
 
   // ------------------------------------------------------------------ AI --
-  Future<void> _analyze() async {
+  /// b28: the first successful AI reading of a drawing is cached by image
+  /// content, so re-analyzing the SAME blueprint is instant and free.
+  /// Returns (plan, fromCache). [force] skips the cache (a deliberate
+  /// "Re-scan with AI").
+  Future<(LayoutPlan, bool)> _planFor(File image, {bool force = false}) async {
+    final bytes = await image.readAsBytes();
+    if (!force) {
+      final cached = await ScanCache.lookup(bytes);
+      if (cached != null) return (cached, true);
+    }
+    final plan = await analyzeBlueprint(image);
+    await ScanCache.store(bytes, plan);
+    return (plan, false);
+  }
+
+  /// [rescan] == null hides the action: the one-tap path has already
+  /// pushed the Design studio, and a re-scan running invisibly behind it
+  /// (spending a credit with zero feedback, then pushing a SECOND
+  /// studio) is worse than pointing at the Analyze button instead.
+  SnackBar _cachedSnack(void Function()? rescan) => SnackBar(
+        duration: const Duration(seconds: 6),
+        content: Text(rescan != null
+            ? 'Loaded your saved scan of this blueprint - instant, no AI '
+                'credit used'
+            : 'Loaded your saved scan - instant, no AI credit used. Use '
+                '"Analyze blueprint" for a fresh AI reading.'),
+        action: rescan == null
+            ? null
+            : SnackBarAction(label: 'Re-scan with AI', onPressed: rescan),
+      );
+
+  Future<void> _analyze({bool force = false}) async {
     if (_uploadedPath == null) return;
     setState(() {
       _analyzing = true;
       _aiPlan = null;
     });
     try {
-      final plan = await analyzeBlueprint(File(_uploadedPath!));
+      final (plan, fromCache) =
+          await _planFor(File(_uploadedPath!), force: force);
       if (!mounted) return;
       setState(() => _aiPlan = plan);
       final by = aiLastAnsweredBy;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-            content: Text(
-                'AI read ${plan.runs.length} run(s)'
-                '${by == null ? '' : ' - answered by $by'} - review, '
-                'then open the studio')));
+        ..showSnackBar(fromCache
+            // the snackbar outlives route pops - guard the state
+            ? _cachedSnack(() {
+                if (mounted) _analyze(force: true);
+              })
+            : SnackBar(
+                content: Text(
+                    'AI read ${plan.runs.length} run(s)'
+                    '${by == null ? '' : ' - answered by $by'} - review, '
+                    'then open the studio')));
     } catch (e) {
       if (!mounted) return;
       _showError('Analysis failed', e);
@@ -149,7 +188,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
     }
   }
 
-  Future<void> _designOneTap() async {
+  Future<void> _designOneTap({bool force = false}) async {
     if (_uploadedPath == null) return;
     final stages = [
       'Reading the drawing ($_provider)...',
@@ -162,11 +201,13 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
     });
     try {
       LayoutPlan? plan;
+      var fromCache = false;
       for (var i = 0; i < stages.length; i++) {
         if (!mounted) return;
         setState(() => _stage = stages[i]);
         if (i == 0) {
-          plan = await analyzeBlueprint(File(_uploadedPath!));
+          (plan, fromCache) =
+              await _planFor(File(_uploadedPath!), force: force);
         } else {
           await Future<void>.delayed(const Duration(milliseconds: 380));
         }
@@ -181,10 +222,12 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
       final by = aiLastAnsweredBy;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-            content: Text('AI chose a ${KitchenDesign.presetLabels[p.palette] ?? p.palette} '
-                'look${by == null ? '' : ' (answered by $by)'} - '
-                'now make it yours')));
+        ..showSnackBar(fromCache
+            ? _cachedSnack(null)
+            : SnackBar(
+                content: Text('AI chose a ${KitchenDesign.presetLabels[p.palette] ?? p.palette} '
+                    'look${by == null ? '' : ' (answered by $by)'} - '
+                    'now make it yours')));
       _openStudio(p, 'the AI reading of your blueprint');
     } catch (e) {
       if (!mounted) return;
@@ -471,7 +514,7 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
                 ),
               ],
             )
-          else
+          else ...[
             SizedBox(
               width: double.infinity,
               child: FilledButton(
@@ -481,6 +524,19 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
                 child: const Text('Design my kitchen with AI'),
               ),
             ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: aiReady
+                    ? () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const DesignChatScreen()))
+                    : null,
+                icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                label: const Text('Chat with the AI designer'),
+              ),
+            ),
+          ],
           if (_uploadedPath == null || !aiReady) ...[
             const SizedBox(height: 6),
             Text(
