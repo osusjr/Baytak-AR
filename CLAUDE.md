@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 28).
+(internal build counter in lib/theme.dart, currently 29).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -154,6 +154,20 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   'origin_plan_v1'/'origin_design_v1' (freshOrigin flag; restoreLast
   passes false) - the app-bar "Original" action returns to the first
   generated model WITHOUT an AI scan.
+- b29 photo render: lib/services/photo_render.dart (renderPrompt is pure,
+  unit-tested: describes runs wall-by-wall + finish LABELS from the
+  option tables) + lib/screens/photo_render_screen.dart; entry is the
+  Design studio "Photo-render into my room" button (camera/gallery/last
+  room photo). ai_client.imageEditCall -> OpenAI images/edits: proxy mode
+  sends JSON {kind:'image_edit', model, prompt, image_b64} to ai-proxy
+  (which rebuilds it as multipart server-side; SEPARATE tighter limits
+  DEVICE_DAILY_IMAGE_LIMIT=10 / LICENSE_DAILY_IMAGE_LIMIT=80, buckets
+  'img-lic:'/'img-dev:', allowlist gpt-image-1[-mini], size/quality
+  clamped, prompt 4000 chars); direct OPENAI_API_KEY builds do multipart
+  themselves. OPENAI_IMAGE_MODEL dart-define (default gpt-image-1).
+  HONESTY: the render is an AI impression - approximate, not to scale;
+  the 3D model + quote stay the accurate reference; stated on-screen.
+  Redeploying supabase/functions/ai-proxy is REQUIRED for b29 renders.
 - b28 AI designer chat: lib/services/design_chat.dart (pure logic) +
   lib/screens/design_chat_screen.dart (NO WebView; mini top-down
   CustomPaint preview per AI reply). Multi-turn: user sends room photos

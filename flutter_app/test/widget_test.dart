@@ -12,6 +12,7 @@ import 'package:baytak_ar/services/device_id.dart';
 import 'package:baytak_ar/services/kitchen_design.dart';
 import 'package:baytak_ar/services/kitchen_generator.dart';
 import 'package:baytak_ar/services/design_chat.dart';
+import 'package:baytak_ar/services/photo_render.dart';
 import 'package:baytak_ar/services/plan_editor.dart';
 import 'package:baytak_ar/services/plan_normalizer.dart';
 import 'package:baytak_ar/services/saved_designs.dart';
@@ -923,6 +924,37 @@ Here you go:
       expect(rj.containsKey('orig_b'), isFalse);
       expect(rj.containsKey('auto'), isFalse);
       expect(rj['from_m'], closeTo(0.67, 1e-6)); // real fields intact
+    });
+
+    test('photo-render prompt describes the layout and the chosen '
+        'finishes by label (b29)', () {
+      final plan = LayoutPlan(widthM: 3.6, depthM: 3.0, runs: [
+        RunPlan(
+            wall: Wall.north,
+            a: 0.1,
+            b: 3.5,
+            sinkAt: 0.9,
+            rangeAt: 2.6,
+            fridge: 'end',
+            uppers: true),
+      ], island: IslandPlan(x0: 1.0, z0: 1.6, w: 1.6, d: 0.9));
+      const design = KitchenDesign(
+          lower: 'navy_blue',
+          worktop: 'butcher_block',
+          floor: 'slate_tile',
+          hardware: 'black');
+      final p = renderPrompt(plan, design);
+      expect(p, contains('3.6 x 3.0 metres'));
+      expect(p, contains('back wall'));
+      expect(p, contains('undermount sink'));
+      expect(p, contains('tall fridge'));
+      expect(p, contains('island'));
+      expect(p, contains('Navy blue')); // labels, not raw ids
+      expect(p, contains('Butcher block'));
+      expect(p, contains('Slate tile'));
+      expect(p, contains('Matte black'));
+      expect(p, isNot(contains('navy_blue'))); // no raw ids leak
+      expect(p.length, lessThan(4000)); // proxy prompt clamp
     });
 
     test('vocabulary carries every real option id', () {

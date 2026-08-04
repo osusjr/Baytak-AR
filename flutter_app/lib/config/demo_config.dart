@@ -33,6 +33,13 @@ class DemoConfig {
   static const openaiModel = String.fromEnvironment('OPENAI_MODEL',
       defaultValue: 'gpt-5.6-sol');
 
+  /// b29 photo render: the OpenAI image-edit model used to paint the
+  /// designed kitchen into the customer's room photo. Swappable without
+  /// code when OpenAI ships a newer tier.
+  static const openaiImageModel = String.fromEnvironment(
+      'OPENAI_IMAGE_MODEL',
+      defaultValue: 'gpt-image-1');
+
   /// Optional second FREE provider (aistudio.google.com key, no card):
   /// adds Gemini Flash to the vision fallback chain for extra reliability.
   static const geminiApiKey =

@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/analytics.dart';
@@ -15,6 +18,7 @@ import '../services/saved_designs.dart';
 import '../theme.dart';
 import '../widgets/iso_kitchen_editor.dart';
 import 'design_chat_screen.dart';
+import 'photo_render_screen.dart';
 import 'product_details_screen.dart';
 
 /// Design studio (b20): the generated kitchen broken into its elements.
@@ -122,6 +126,72 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
     await prefs.setString(
         'origin_plan_v1', jsonEncode(widget.plan.toJson()));
     await prefs.setString('origin_design_v1', _design.encode());
+  }
+
+  /// b29: pick a photo of the customer's real (empty) room, then paint
+  /// THIS design into it with the image AI. The last room photo from the
+  /// Room designer is offered as a shortcut.
+  Future<void> _photoRender() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastRoom = prefs.getString('room_photo');
+    final hasLast = lastRoom != null && File(lastRoom).existsSync();
+    if (!mounted) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Photo of your empty room',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('Take a photo now'),
+              onTap: () => Navigator.of(ctx).pop('camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.of(ctx).pop('gallery'),
+            ),
+            if (hasLast)
+              ListTile(
+                leading: const Icon(Icons.history),
+                title: const Text('Use my last room photo'),
+                onTap: () => Navigator.of(ctx).pop('last'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    Uint8List bytes;
+    try {
+      if (choice == 'last') {
+        bytes = await File(lastRoom!).readAsBytes();
+      } else {
+        final picked = await ImagePicker().pickImage(
+            source: choice == 'camera'
+                ? ImageSource.camera
+                : ImageSource.gallery,
+            maxWidth: 3200,
+            imageQuality: 92);
+        if (picked == null) return;
+        bytes = await picked.readAsBytes();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Could not open that: $e')));
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => PhotoRenderScreen(
+            plan: widget.plan, design: _design, roomPhoto: bytes)));
   }
 
   Future<void> _restoreOriginal() async {
@@ -741,7 +811,7 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
                 ),
               ],
             )
-          else
+          else ...[
             SizedBox(
               width: double.infinity,
               child: FilledButton(
@@ -749,6 +819,26 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
                 child: const Text('Build my kitchen in 3D & AR'),
               ),
             ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _photoRender,
+                icon: const Icon(Icons.auto_awesome, size: 18),
+                label: const Text('Photo-render into my room'),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'The 3D model is the accurate one; the photo render is an '
+              'AI impression of this design inside a photo of your real '
+              'room (one image credit).',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.outline),
+            ),
+          ],
         ],
       ),
     ];

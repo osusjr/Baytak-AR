@@ -82,6 +82,11 @@ supabase secrets set REQUIRE_LICENSE=true          # ON by default; set
 supabase secrets set DEVICE_DAILY_LIMIT=300       # per device/day (fairness)
 supabase secrets set LICENSE_DAILY_LIMIT=4000     # per STORE/day - the real
                                                   # spend cap (billed calls)
+# b29 photo render (OpenAI gpt-image, ~$0.02-0.19 per picture - these are
+# SEPARATE, much lower ceilings; defaults shown):
+supabase secrets set DEVICE_DAILY_IMAGE_LIMIT=10  # renders per device/day
+supabase secrets set LICENSE_DAILY_IMAGE_LIMIT=80 # renders per STORE/day
+# NOTE: b29 requires redeploying the function (functions deploy ai-proxy).
 
 # CRITICAL last-line-of-defense, on YOUR end (2 minutes):
 # platform.openai.com -> Settings -> Limits -> set a HARD monthly usage

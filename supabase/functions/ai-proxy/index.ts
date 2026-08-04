@@ -67,6 +67,25 @@ const ALLOWED_MODELS = new Set<string>([
 const MAX_OUTPUT_TOKENS = 16384;
 const MAX_BODY_BYTES = 400 * 1024; // ~180 KB image data-URI + prompt headroom
 
+// ---- b29 photo render: OpenAI images/edits, strictly gated -------------
+// An image render costs 10-40x a chat call, so it gets its OWN allowlist,
+// its own (much lower) daily ceilings and clamped size/quality. The app
+// sends JSON {kind:'image_edit', model, prompt, image_b64, media_type};
+// this function rebuilds it as multipart for the OpenAI edits endpoint.
+const IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits";
+const ALLOWED_IMAGE_MODELS = new Set<string>([
+  "gpt-image-1",
+  "gpt-image-1-mini",
+]);
+const ALLOWED_IMAGE_SIZES = new Set<string>([
+  "1024x1024",
+  "1536x1024",
+  "1024x1536",
+  "auto",
+]);
+const ALLOWED_IMAGE_QUALITY = new Set<string>(["low", "medium", "high"]);
+const MAX_RENDER_PROMPT = 4000;
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -104,8 +123,20 @@ Deno.serve(async (req) => {
     return json(400, { error: "invalid JSON body" });
   }
 
+  const isImageEdit = body["kind"] === "image_edit";
   const model = String(body["model"] ?? "");
-  if (!ALLOWED_MODELS.has(model) || !Array.isArray(body["messages"])) {
+  if (isImageEdit) {
+    if (
+      !ALLOWED_IMAGE_MODELS.has(model) ||
+      typeof body["prompt"] !== "string" ||
+      typeof body["image_b64"] !== "string"
+    ) {
+      return json(400, {
+        error: "model_not_allowed",
+        message: "Unknown image model or missing prompt/image.",
+      });
+    }
+  } else if (!ALLOWED_MODELS.has(model) || !Array.isArray(body["messages"])) {
     return json(400, {
       error: "model_not_allowed",
       message: "Unknown model or missing messages.",
@@ -162,10 +193,17 @@ Deno.serve(async (req) => {
   // - and failed/unbilled attempts cost nothing. We READ current counts
   // here to reject over-budget callers before spending money.
   const deviceId = (req.headers.get("x-device-id") ?? "unknown").slice(0, 64);
-  const deviceLimit = posInt("DEVICE_DAILY_LIMIT", 300);
-  const licenseLimit = posInt("LICENSE_DAILY_LIMIT", 4000);
-  const licBucket = `lic:${licenseKey || "no-license"}`;
-  const devBucket = `dev:${deviceId}`;
+  // image renders draw on their own, much lower ceilings - one render
+  // costs an order of magnitude more than a chat call
+  const deviceLimit = isImageEdit
+    ? posInt("DEVICE_DAILY_IMAGE_LIMIT", 10)
+    : posInt("DEVICE_DAILY_LIMIT", 300);
+  const licenseLimit = isImageEdit
+    ? posInt("LICENSE_DAILY_IMAGE_LIMIT", 80)
+    : posInt("LICENSE_DAILY_LIMIT", 4000);
+  const prefix = isImageEdit ? "img-" : "";
+  const licBucket = `${prefix}lic:${licenseKey || "no-license"}`;
+  const devBucket = `${prefix}dev:${deviceId}`;
 
   const { data: counts, error: readErr } = await admin
     .from("proxy_usage")
@@ -191,6 +229,74 @@ Deno.serve(async (req) => {
       error: "quota_exceeded",
       message: `Daily AI quota (${deviceLimit}) reached for this device.`,
     });
+  }
+
+  // ---- image edit branch: multipart to OpenAI images/edits --------------
+  if (isImageEdit) {
+    const key = Deno.env.get("OPENAI_API_KEY") ?? "";
+    if (!key) {
+      return json(501, {
+        error: "provider_not_configured",
+        message: "OPENAI_API_KEY is not set on the proxy.",
+      });
+    }
+    const prompt = String(body["prompt"]).slice(0, MAX_RENDER_PROMPT);
+    const sizeIn = String(body["size"] ?? "1024x1024");
+    const size = ALLOWED_IMAGE_SIZES.has(sizeIn) ? sizeIn : "1024x1024";
+    const qualIn = String(body["quality"] ?? "medium");
+    const quality = ALLOWED_IMAGE_QUALITY.has(qualIn) ? qualIn : "medium";
+    const mediaType = String(body["media_type"] ?? "image/jpeg") === "image/png"
+      ? "image/png"
+      : "image/jpeg";
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(
+        atob(String(body["image_b64"])),
+        (c) => c.charCodeAt(0),
+      );
+    } catch {
+      return json(400, { error: "invalid_image", message: "Bad base64." });
+    }
+    const form = new FormData();
+    form.append("model", model);
+    form.append("prompt", prompt);
+    form.append("size", size);
+    form.append("quality", quality);
+    form.append("n", "1");
+    form.append(
+      "image[]",
+      new Blob([bytes], { type: mediaType }),
+      mediaType === "image/png" ? "room.png" : "room.jpg",
+    );
+    try {
+      const upstream = await fetch(IMAGE_EDIT_URL, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}` },
+        body: form,
+        signal: AbortSignal.timeout(150_000),
+      });
+      const text = await upstream.text();
+      if (upstream.status >= 200 && upstream.status < 300) {
+        await Promise.all([
+          admin.rpc("bump_proxy_usage", { p_device: licBucket, p_day: day }),
+          admin.rpc("bump_proxy_usage", { p_device: devBucket, p_day: day }),
+        ]).catch(() => {});
+        return new Response(text, {
+          status: 200,
+          headers: { "content-type": "application/json", ...CORS },
+        });
+      }
+      return json(502, {
+        error: "upstream_error",
+        status: upstream.status,
+        message: "The image provider returned an error.",
+      });
+    } catch (e) {
+      const timeout = e instanceof DOMException && e.name === "TimeoutError";
+      return json(timeout ? 504 : 502, {
+        error: timeout ? "upstream_timeout" : "upstream_unreachable",
+      });
+    }
   }
 
   // ---- provider routing + strict body rebuild ---------------------------

@@ -344,6 +344,110 @@ Future<Map<String, dynamic>> aiImagePart(List<int> bytes) async {
   };
 }
 
+/// b29 photo render: paints the designed kitchen into the customer's
+/// room photo via OpenAI images/edits (gpt-image). Proxy mode sends JSON
+/// {kind:'image_edit', ...} to the store's Edge Function (key stays
+/// server-side, separate tighter daily limits); a dev build with a
+/// direct OPENAI_API_KEY posts multipart to api.openai.com. Returns the
+/// rendered image bytes (PNG). Throws [AiClientException] with an
+/// actionable message on every failure path.
+Future<Uint8List> imageEditCall({
+  required List<int> imageBytes,
+  required String prompt,
+  String quality = 'medium',
+}) async {
+  final (prepared, mime) = await _prepareImage(imageBytes, 'image/jpeg');
+  final model = _sanitize(DemoConfig.openaiImageModel);
+
+  final proxy = await _proxyUrl();
+  http.Response resp;
+  if (proxy.isNotEmpty && _anonKey.isNotEmpty) {
+    final device = await deviceId();
+    try {
+      resp = await http
+          .post(
+            Uri.parse(proxy),
+            headers: {
+              'content-type': 'application/json',
+              'accept': 'application/json',
+              'authorization': 'Bearer $_anonKey',
+              'apikey': _anonKey,
+              if (_sanitize(DemoConfig.licenseKey).isNotEmpty)
+                'x-license-key': _sanitize(DemoConfig.licenseKey),
+              'x-device-id': device,
+            },
+            body: jsonEncode({
+              'kind': 'image_edit',
+              'model': model,
+              'prompt': prompt,
+              'image_b64': base64Encode(prepared),
+              'media_type': mime,
+              'size': '1024x1024',
+              'quality': quality,
+            }),
+          )
+          .timeout(const Duration(seconds: 165));
+    } on Exception catch (e) {
+      throw AiClientException('The photo render did not reach the store '
+          'server. Check the internet connection and try again.\n\n$e');
+    }
+    if (resp.statusCode == 402 || resp.statusCode == 429) {
+      String msg;
+      try {
+        msg = '${(jsonDecode(resp.body) as Map)['message'] ?? ''}';
+      } catch (_) {
+        msg = '';
+      }
+      throw AiClientException(msg.isNotEmpty
+          ? msg
+          : resp.statusCode == 402
+              ? 'The store license is missing or deactivated.'
+              : 'The daily photo-render limit has been reached. '
+                  'Try again tomorrow.');
+    }
+  } else {
+    final key = await _resolveKey(DemoConfig.openaiApiKey, 'cfg_openai_key');
+    if (key.isEmpty) throw AiClientException(aiNotConfiguredMessage);
+    final req = http.MultipartRequest(
+        'POST', Uri.parse('https://api.openai.com/v1/images/edits'))
+      ..headers['authorization'] = 'Bearer $key'
+      ..fields['model'] = model
+      ..fields['prompt'] = prompt
+      ..fields['size'] = '1024x1024'
+      ..fields['quality'] = quality
+      ..fields['n'] = '1'
+      ..files.add(http.MultipartFile.fromBytes('image[]', prepared,
+          filename: mime == 'image/png' ? 'room.png' : 'room.jpg'));
+    try {
+      resp = await http.Response.fromStream(
+          await req.send().timeout(const Duration(seconds: 165)));
+    } on Exception catch (e) {
+      throw AiClientException('The photo render did not reach OpenAI. '
+          'Check the internet connection and try again.\n\n$e');
+    }
+  }
+
+  if (resp.statusCode < 200 || resp.statusCode >= 300) {
+    throw AiClientException(
+        'The photo render failed (HTTP ${resp.statusCode}). The image '
+        'service may be busy - try again in a moment.');
+  }
+  try {
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    final b64 = '${((data['data'] as List).first as Map)['b64_json']}';
+    if (b64.isEmpty || b64 == 'null') {
+      throw AiClientException('The image service returned no picture.');
+    }
+    aiLastAnsweredBy = _friendlyModel(
+        model, proxy.isNotEmpty && _anonKey.isNotEmpty ? proxy : _openaiEndpoint);
+    return base64Decode(b64);
+  } on AiClientException {
+    rethrow;
+  } catch (e) {
+    throw AiClientException('Could not read the rendered image.\n\n$e');
+  }
+}
+
 /// Text-only call against the reasoning chain (stage 2 of the blueprint
 /// pipeline). Same fallback behaviour as [visionCall].
 Future<String> textCall({
