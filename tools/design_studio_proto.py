@@ -355,9 +355,52 @@ def build_tall(s, f, r, handle_style="bar", door_style="slab"):
                   BD + 0.017, BD + 0.049, "brass")
 
 
+def worktop_span(r, ca, cb, runs, w, d):
+    """b31 corner-aware worktop extent: at an L-corner the top runs
+    EXACTLY to the perpendicular neighbour's counter face, so the two
+    tops join FLUSH - no 5 mm coplanar overlap (z-fighting), no slit.
+    [ca, cb] is the COUNTER part of the run (fridge slot excluded).
+    Returns (wa, wb) for the worktop slab (default ca-0.02 .. cb+0.02)."""
+    a, b = ca, cb
+    wa, wb = a - 0.02, b + 0.02
+    horiz = r["wall"] in ("north", "south")
+    m = w if horiz else d
+    m_cross = d if horiz else w
+    # my rect's cross extent measured along the PERPENDICULAR axis
+    my_near = r["wall"] in ("north", "west")
+    cross0 = 0.0 if my_near else m_cross - CD
+    cross1 = CD if my_near else m_cross
+    near_wall = "north" if not horiz else "west"
+    far_wall = "south" if not horiz else "east"
+    for q in runs:
+        if q is r:
+            continue
+        if (q["wall"] in ("north", "south")) == horiz:
+            continue
+        if q.get("fridge") and (q["b"] - q["a"]) <= FRIDGE_ONLY_LEN + 0.06:
+            continue  # freestanding fridge: no worktop to join
+        # q's span (along its own axis == my cross axis) must reach my band
+        lo, hi = max(q["a"], cross0), min(q["b"], cross1)
+        if hi - lo < 0.10:
+            continue
+        qdepth = BD if q.get("tall") else CD
+        if q["wall"] == near_wall:
+            face = qdepth
+            if -0.02 <= a - face <= 0.08:
+                wa = face
+        elif q["wall"] == far_wall:
+            face = m - qdepth
+            if -0.02 <= face - b <= 0.08:
+                wb = face
+    return wa, wb
+
+
+FRIDGE_ONLY_LEN = 0.80
+
+
 # --- run builder: mirror of Dart _buildRun + design hooks ------------------
 def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
-              draw_windows=True):
+              draw_windows=True, runs=(), room_w=0.0, room_d=0.0):
     if r.get("tall"):
         build_tall(s, f, r, handle_style, door_style)
         return
@@ -376,7 +419,11 @@ def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
 
     f.box(s, a + 0.02, b - 0.02, 0, TH, 0.02, BD - 0.05, "toe")
     f.box(s, a, b, TH, BH, 0.0, BD, "walnut")
-    f.box(s, a - 0.02, b + 0.02, BH, CTOP, 0.0, CD, "basalt")
+    if runs and room_w:
+        wa, wb = worktop_span(r, a, b, runs, room_w, room_d)
+    else:
+        wa, wb = a - 0.02, b + 0.02
+    f.box(s, wa, wb, BH, CTOP, 0.0, CD, "basalt")
     f.box(s, a, b, CTOP, 1.46, 0.0, 0.02, "splash")
 
     n = max(2, round((b - a) / 0.60))
@@ -595,7 +642,8 @@ def build_plan_b20(plan, d):
     for r in plan["runs"]:
         build_run(s, Frame(r["wall"], w, dp), r, wins,
                   handle_style=d["handle"], door_style=d["door"],
-                  draw_windows=False)
+                  draw_windows=False, runs=plan["runs"],
+                  room_w=w, room_d=dp)
     for wl in walls:
         draw_wall_windows(s, Frame(wl, w, dp), wins)
     if plan.get("island"):

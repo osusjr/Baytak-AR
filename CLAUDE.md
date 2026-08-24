@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 30).
+(internal build counter in lib/theme.dart, currently 31).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -178,6 +178,21 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   ~1.5 m runs. A 300-seed FUZZ test (widget_test.dart) asserts the
   no-overlap invariant over random place/move/resize/add/remove/island
   sequences - keep it green when touching editor/normalizer rules.
+- b31 realistic corners + collision drags: (1) worktopSpan()
+  (kitchen_generator.dart, PUBLIC - iso editor uses it too; validated in
+  design_studio_proto.py worktop_span): at an L-corner the worktop runs
+  EXACTLY to the perpendicular neighbour's counter face (counter 0.655 /
+  tall 0.62) - flush join, no 5 mm coplanar overlap, no slit; fridge
+  corners and freestanding fridges keep their clearance gap. (2) DRAGS
+  COLLIDE (plan_editor): moveRun/resizeRun clamp against _bands() -
+  perpendicular corner clearances (0.67 counter / 0.82 fridge, SYMMETRIC:
+  N/S drags stop for E/W runs too instead of sacrificing them) and
+  incompatible same-wall spans (tall|base, fridge-only) - the run slides
+  to the nearest legal spot; same-wall same-kind overlap still merges
+  (that IS the join). (3) NEVER-DELETE guard (_othersSurvived): no
+  moveRun/resizeRun/place may silently delete another non-auto run
+  (merge-absorption counts as joined; a moving freestanding fridge's
+  source is exempt) - "cabinets adjust" = trim-and-regrow only.
 - b29 photo render: lib/services/photo_render.dart (renderPrompt is pure,
   unit-tested: describes runs wall-by-wall + finish LABELS from the
   option tables) + lib/screens/photo_render_screen.dart; entry is the

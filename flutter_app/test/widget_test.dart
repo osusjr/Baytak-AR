@@ -942,6 +942,124 @@ void main() {
     });
   });
 
+  group('Realistic corners + collision drags (b31)', () {
+    test('L-corner worktops join flush - no overlap, no slit', () {
+      final north = RunPlan(
+          wall: Wall.north, a: 0.02, b: 4.1, sinkAt: 1.4, uppers: true);
+      final west = RunPlan(wall: Wall.west, a: 0.67, b: 3.3, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.6, runs: [north, west]);
+      final (wa, wb) = worktopSpan(west, west.a, west.b, plan);
+      expect(wa, closeTo(0.655, 1e-9)); // exactly the north counter face
+      expect(wb, closeTo(3.32, 1e-9)); // free end keeps its 2 cm lip
+      // the north run's own top is untouched (it owns the corner square)
+      final (na, _) = worktopSpan(north, north.a, north.b, plan);
+      expect(na, closeTo(0.0, 1e-9));
+    });
+
+    test('counter worktop butts a tall unit at its 0.62 face', () {
+      final tall = RunPlan(wall: Wall.west, a: 0.02, b: 0.62, tall: true);
+      final north = RunPlan(wall: Wall.north, a: 0.67, b: 4.1, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.6, runs: [tall, north]);
+      final (wa, _) = worktopSpan(north, north.a, north.b, plan);
+      expect(wa, closeTo(0.62, 1e-9));
+    });
+
+    test('fridge corners keep their clearance - no worktop join', () {
+      final north = RunPlan(
+          wall: Wall.north, a: 0.02, b: 4.1, fridge: 'start', uppers: true);
+      final west = RunPlan(wall: Wall.west, a: 0.82, b: 3.3, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.6, runs: [north, west]);
+      final (wa, _) = worktopSpan(west, west.a, west.b, plan);
+      expect(wa, closeTo(0.80, 1e-9)); // default lip, no join
+    });
+
+    test('dragging into a perpendicular run STOPS at the clearance - '
+        'nothing is trimmed or deleted', () {
+      final north = RunPlan(
+          wall: Wall.north, a: 0.02, b: 4.1, sinkAt: 1.4, uppers: true);
+      final west = RunPlan(wall: Wall.west, a: 1.2, b: 2.8, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.6, runs: [north, west]);
+      final editor = PlanEditor(plan);
+      // shove the west run hard into the north corner
+      expect(editor.moveRun(west, Wall.west, 0.0), isTrue);
+      expect(west.a, closeTo(PlanNormalizer.clearCounter, 1e-6));
+      expect(north.a, closeTo(0.02, 1e-6)); // untouched
+      expect(north.b, closeTo(4.1, 1e-6));
+      expect(plan.runs, hasLength(2));
+    });
+
+    test('dragging an N/S run toward an E/W run also collides - the E/W '
+        'run is no longer sacrificed', () {
+      // the west run reaches INTO the south corner band, so the old
+      // behaviour would have trimmed it (E/W yields to N/S)
+      final west = RunPlan(wall: Wall.west, a: 0.9, b: 3.5, uppers: true);
+      final south = RunPlan(
+          wall: Wall.south, a: 2.0, b: 4.0, sinkAt: 3.0, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.6, runs: [west, south]);
+      final editor = PlanEditor(plan);
+      // drag the south run toward the west corner
+      expect(editor.moveRun(south, Wall.south, 0.0), isTrue);
+      expect(south.a, closeTo(PlanNormalizer.clearCounter, 1e-6));
+      expect(west.a, closeTo(0.9, 1e-6)); // fully intact
+      expect(west.b, closeTo(3.5, 1e-6));
+    });
+
+    test('dragging a counter onto a freestanding fridge stops flush - '
+        'the fridge never teleports', () {
+      final counter = RunPlan(
+          wall: Wall.north, a: 0.1, b: 1.6, sinkAt: 0.8, uppers: true);
+      final fridge =
+          RunPlan(wall: Wall.north, a: 2.6, b: 3.4, fridge: 'start');
+      final plan =
+          LayoutPlan(widthM: 4.6, depthM: 3.2, runs: [counter, fridge]);
+      final editor = PlanEditor(plan);
+      // drop the counter right on top of the fridge
+      expect(editor.moveRun(counter, Wall.north, 3.0), isTrue);
+      expect(fridge.a, closeTo(2.6, 1e-6));
+      expect(fridge.b, closeTo(3.4, 1e-6));
+      // the counter sits flush against one side of it
+      final touchLeft = (counter.b - fridge.a).abs() < 1e-6;
+      final touchRight = (counter.a - fridge.b).abs() < 1e-6;
+      expect(touchLeft || touchRight, isTrue,
+          reason: 'counter at [${counter.a},${counter.b}]');
+    });
+
+    test('resize growth stops at the corner clearance', () {
+      final north = RunPlan(
+          wall: Wall.north, a: 0.02, b: 4.1, sinkAt: 1.4, uppers: true);
+      final west = RunPlan(wall: Wall.west, a: 1.2, b: 2.8, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.6, runs: [north, west]);
+      final editor = PlanEditor(plan);
+      expect(editor.resizeRun(west, startEnd: true, v: 0.0), isTrue);
+      expect(west.a, closeTo(PlanNormalizer.clearCounter, 1e-6));
+      expect(north.b, closeTo(4.1, 1e-6)); // untouched
+    });
+
+    test('a fridge drop that would DELETE a small perpendicular run is '
+        'refused instead', () {
+      // west run 0.93 m: the fridge clearance (0.82) would trim it to
+      // 0.78 < 0.9 -> the old behaviour deleted it silently
+      final west = RunPlan(wall: Wall.west, a: 0.67, b: 1.6, uppers: true);
+      final north = RunPlan(
+          wall: Wall.north, a: 0.9, b: 4.1, sinkAt: 1.6, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.6, runs: [west, north]);
+      final editor = PlanEditor(plan);
+      final ok = editor.place(ApplianceKind.fridge, Wall.north, 1.0);
+      // either the drop landed somewhere legal or it was refused -
+      // but the west run must still exist either way
+      expect(plan.runs.contains(west), isTrue,
+          reason: 'place returned $ok and deleted the west run');
+      expect(west.length, greaterThanOrEqualTo(0.9 - 1e-9));
+    });
+  });
+
   group('No-overlap invariant (b30 fuzz)', () {
     // real built geometry: the counter part is 0.655 deep and only the
     // 0.8 m fridge SLOT is 0.75 deep - modelling the whole run at 0.75

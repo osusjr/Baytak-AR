@@ -94,6 +94,115 @@ class PlanEditor {
     return null;
   }
 
+  // ------------------------------------------------- b31 drag collisions --
+  static bool _isFridgeOnly(RunPlan r) =>
+      r.fridge != null && r.length <= 0.86;
+
+  /// Forbidden intervals along [wall]'s axis for a dragged/resized run:
+  /// the corner clearances every perpendicular run claims (fridge slots
+  /// claim more), plus the spans of same-wall runs it must never merge
+  /// with (tall vs base, freestanding fridge vs counter). Dragging now
+  /// COLLIDES with these instead of trimming or deleting the other run -
+  /// "cabinets adjust" stays reserved for appliance placement.
+  List<(double, double)> _bands(Wall wall, RunPlan self) {
+    final m = _wallLen(wall);
+    final horiz = wall == Wall.north || wall == Wall.south;
+    final mCross = horiz ? plan.depthM : plan.widthM;
+    final myDepth = self.fridge != null
+        ? PlanNormalizer.fridgeD
+        : PlanNormalizer.counterD;
+    final myNear = wall == Wall.north || wall == Wall.west;
+    final c0 = myNear ? 0.0 : mCross - myDepth;
+    final c1 = myNear ? myDepth : mCross;
+    final nearWall = horiz ? Wall.west : Wall.north; // wall at my a end
+    final farWall = horiz ? Wall.east : Wall.south;
+    final out = <(double, double)>[];
+    for (final q in plan.runs) {
+      if (identical(q, self)) continue;
+      if (q.wall == wall) {
+        final incompatible = q.tall != self.tall ||
+            _isFridgeOnly(q) != _isFridgeOnly(self);
+        if (incompatible) out.add((q.a, q.b));
+        continue;
+      }
+      final qHoriz = q.wall == Wall.north || q.wall == Wall.south;
+      if (qHoriz == horiz) continue; // parallel far wall - no corner
+      final overlap = math.min(q.b, c1) - math.max(q.a, c0);
+      double clear;
+      if (q.fridge != null) {
+        final fa =
+            q.fridge == 'start' ? q.a : q.b - PlanNormalizer.fridgeSpan;
+        final fb =
+            q.fridge == 'start' ? q.a + PlanNormalizer.fridgeSpan : q.b;
+        final fOverlap = math.min(fb, c1) - math.max(fa, c0);
+        if (fOverlap > 0.02) {
+          clear = PlanNormalizer.clearFridge;
+        } else if (overlap > 0.02) {
+          clear = PlanNormalizer.clearCounter;
+        } else {
+          continue;
+        }
+      } else if (overlap > 0.02) {
+        clear = PlanNormalizer.clearCounter;
+      } else {
+        continue;
+      }
+      if (q.wall == nearWall) {
+        out.add((0.0, clear));
+      } else if (q.wall == farWall) {
+        out.add((m - clear, m));
+      }
+    }
+    return out;
+  }
+
+  /// Slides an interval of [len] to the closest legal position to
+  /// [desiredA] on [wall], avoiding [bands]. Null when nothing fits.
+  double? _clampIntoFree(
+      Wall wall, double len, double desiredA, List<(double, double)> bands) {
+    final m = _wallLen(wall);
+    bands.sort((x, y) => x.$1.compareTo(y.$1));
+    final segs = <(double, double)>[];
+    var cur = 0.02;
+    for (final (lo, hi) in bands) {
+      if (lo > cur) segs.add((cur, math.min(lo, m - 0.02)));
+      cur = math.max(cur, hi);
+    }
+    if (cur < m - 0.02) segs.add((cur, m - 0.02));
+    double? best;
+    var bestDist = double.infinity;
+    for (final (lo, hi) in segs) {
+      if (hi - lo < len - 1e-9) continue;
+      final a = desiredA.clamp(lo, hi - len).toDouble();
+      final dist = (a - desiredA).abs();
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = a;
+      }
+    }
+    return best;
+  }
+
+  /// b31 guard: no drag/resize/drop may silently DELETE another run.
+  /// [before] is the pre-edit list of non-auto runs; a run absorbed by a
+  /// same-wall merge (its span covered by a survivor) counts as joined,
+  /// not lost. Auto runs are exempt (the ghost sweep is their design).
+  bool _othersSurvived(List<RunPlan> before, {RunPlan? moved}) {
+    for (final o in before) {
+      if (identical(o, moved)) continue;
+      if (plan.runs.contains(o)) continue;
+      final covered = plan.runs.any((r) =>
+          r.wall == o.wall &&
+          r.a <= o.a + 0.05 &&
+          r.b >= o.b - 0.05);
+      if (!covered) return false;
+    }
+    return true;
+  }
+
+  List<RunPlan> _solidRuns() =>
+      [for (final r in plan.runs) if (!r.auto) r];
+
   // --------------------------------------------------------------- moves --
   /// b20 entry point: put [kind] at position [u] along [wall], wherever
   /// that is - on, near, or far from existing cabinets. Returns false only
@@ -141,12 +250,21 @@ class PlanEditor {
     // new corner run with no room), roll everything back instead of
     // letting the appliance silently vanish
     final saved = _snapshot();
+    // b31: the source of a moving freestanding fridge is legitimately
+    // removed; every OTHER cabinet must survive the drop ("cabinets
+    // adjust" means trim-and-regrow, never silent deletion)
+    final srcFridge =
+        kind == ApplianceKind.fridge ? runWith(ApplianceKind.fridge) : null;
+    final before = [
+      for (final r in _solidRuns())
+        if (!(identical(r, srcFridge) && _isFridgeOnly(r))) r
+    ];
     var ok = kind == ApplianceKind.fridge
         ? _placeFridge(wall, u)
         : _placeAppliance(kind, wall, u);
     if (ok) {
       normalizePlan(plan);
-      ok = runWith(kind) != null;
+      ok = runWith(kind) != null && _othersSurvived(before);
     }
     if (!ok) {
       _restore(saved);
@@ -169,7 +287,14 @@ class PlanEditor {
     final m = _wallLen(wall);
     final len = run.length;
     if (m < len + 0.04) return false;
-    final a = (u - len / 2).clamp(0.02, m - len - 0.02).toDouble();
+    final before = _solidRuns();
+    // b31: the drag COLLIDES with perpendicular runs' corner clearances
+    // and incompatible same-wall units - the run slides to the nearest
+    // legal spot instead of trimming or deleting what it hits
+    final desired = (u - len / 2).clamp(0.02, m - len - 0.02).toDouble();
+    final clamped = _clampIntoFree(wall, len, desired, _bands(wall, run));
+    if (clamped == null) return false;
+    final a = clamped;
 
     RunPlan moved;
     if (wall == run.wall) {
@@ -230,6 +355,8 @@ class PlanEditor {
         (!carriedSink || runWith(ApplianceKind.sink) != null) &&
         (!carriedRange || runWith(ApplianceKind.range) != null) &&
         (!carriedFridge || runWith(ApplianceKind.fridge) != null);
+    // b31: and no OTHER cabinet may have been deleted by the move
+    survived = survived && _othersSurvived(before, moved: run);
     if (!survived) {
       _restore(saved);
       return false;
@@ -245,6 +372,16 @@ class PlanEditor {
     if (!plan.runs.contains(run)) return false;
     final saved = _snapshot();
     final m = _wallLen(run.wall);
+    final before = _solidRuns();
+    // b31: growth stops at perpendicular corner clearances and at
+    // incompatible same-wall units - a resize collides, it never trims
+    // or deletes the neighbour
+    var capLo = 0.02, capHi = m - 0.02;
+    final mid = (run.a + run.b) / 2;
+    for (final (bLo, bHi) in _bands(run.wall, run)) {
+      if (bHi <= mid) capLo = math.max(capLo, bHi);
+      if (bLo >= mid) capHi = math.min(capHi, bLo);
+    }
     // the shrink limit: keep every appliance (+ margins) inside
     var lo = run.a, hi = run.b;
     final needs = <double>[
@@ -260,8 +397,8 @@ class PlanEditor {
       }
       if (run.fridge == 'start') maxA = math.min(maxA, run.a);
       // a fridge-only run has no room to give: clamp bounds can invert
-      if (maxA < 0.02) return false;
-      lo = v.clamp(0.02, maxA).toDouble();
+      if (maxA < capLo) return false;
+      lo = v.clamp(capLo, maxA).toDouble();
       if (hi - lo < minL - 1e-9) return false;
       run.a = lo;
     } else {
@@ -270,8 +407,8 @@ class PlanEditor {
         minB = math.max(minB, p + edgeMargin);
       }
       if (run.fridge == 'end') minB = math.max(minB, run.b);
-      if (minB > m - 0.02) return false;
-      hi = v.clamp(minB, m - 0.02).toDouble();
+      if (minB > capHi) return false;
+      hi = v.clamp(minB, capHi).toDouble();
       if (hi - lo < minL - 1e-9) return false;
       run.b = hi;
     }
@@ -279,7 +416,8 @@ class PlanEditor {
     // would immediately undo the user's shrink)
     run.rebaseOrig();
     normalizePlan(plan);
-    if (!plan.runs.contains(run)) {
+    if (!plan.runs.contains(run) ||
+        !_othersSurvived(before, moved: run)) {
       _restore(saved);
       return false;
     }

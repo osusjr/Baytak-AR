@@ -634,6 +634,42 @@ void _doorFront(_Scene s, _Frame f, double u0, double u1, double y0,
   }
 }
 
+/// b31 corner-aware worktop extent: at an L-corner the top runs EXACTLY
+/// to the perpendicular neighbour's counter face, so the two tops join
+/// FLUSH - no 5 mm coplanar overlap (z-fighting), no slit ("one side
+/// blocking the other"). [ca, cb] is the COUNTER part of the run (fridge
+/// slot excluded). Validated in tools/design_studio_proto.py
+/// worktop_span - keep in sync. Public: the iso editor uses it too.
+(double, double) worktopSpan(
+    RunPlan r, double ca, double cb, LayoutPlan plan) {
+  final w = plan.widthM, d = plan.depthM;
+  var wa = ca - 0.02, wb = cb + 0.02;
+  final horiz = r.wall == Wall.north || r.wall == Wall.south;
+  final m = horiz ? w : d;
+  final mCross = horiz ? d : w;
+  final myNear = r.wall == Wall.north || r.wall == Wall.west;
+  final cross0 = myNear ? 0.0 : mCross - _cd;
+  final cross1 = myNear ? _cd : mCross;
+  final nearWall = horiz ? Wall.west : Wall.north;
+  final farWall = horiz ? Wall.east : Wall.south;
+  for (final q in plan.runs) {
+    if (identical(q, r)) continue;
+    if ((q.wall == Wall.north || q.wall == Wall.south) == horiz) continue;
+    if (q.fridge != null && q.length <= 0.86) continue; // freestanding
+    final lo = math.max(q.a, cross0), hi = math.min(q.b, cross1);
+    if (hi - lo < 0.10) continue;
+    final qdepth = q.tall ? _bd : _cd;
+    if (q.wall == nearWall) {
+      final face = qdepth;
+      if (ca - face >= -0.02 && ca - face <= 0.08) wa = face;
+    } else if (q.wall == farWall) {
+      final face = m - qdepth;
+      if (face - cb >= -0.02 && face - cb <= 0.08) wb = face;
+    }
+  }
+  return (wa, wb);
+}
+
 /// b30 tall unit (pantry/larder): floor-to-upper-top carcass with stacked
 /// door leaves. Uses the lower-cabinet material slots so the studio's
 /// 'lower' finish drives it. No worktop, no splash, no uppers.
@@ -667,7 +703,7 @@ void _buildTall(_Scene s, _Frame f, RunPlan r, KitchenDesign design) {
 }
 
 void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
-    KitchenDesign design) {
+    KitchenDesign design, LayoutPlan plan) {
   if (r.tall) {
     _buildTall(s, f, r, design);
     return;
@@ -690,7 +726,8 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
   // carcass, toe, counter, splash
   f.box(s, a + 0.02, b - 0.02, 0, _th, 0.02, _bd - 0.05, 'toe');
   f.box(s, a, b, _th, _bh, 0.0, _bd, 'walnut');
-  f.box(s, a - 0.02, b + 0.02, _bh, _ctop, 0.0, _cd, 'basalt');
+  final (wa, wb) = worktopSpan(r, a, b, plan);
+  f.box(s, wa, wb, _bh, _ctop, 0.0, _cd, 'basalt');
   f.box(s, a, b, _ctop, 1.46, 0.0, 0.02, 'splash');
 
   // door bays, skipping the range slot
@@ -918,7 +955,7 @@ _Scene _buildPlan(LayoutPlan p, KitchenDesign design) {
   if (wallsUsed.contains(Wall.east)) s.box(w, 0, 0, w + _wallT, _hCeil, d, 'wall');
 
   for (final r in p.runs) {
-    _buildRun(s, _Frame(r.wall, w, d), r, p.windows, design);
+    _buildRun(s, _Frame(r.wall, w, d), r, p.windows, design, p);
   }
   for (final wall in wallsUsed) {
     _drawWallWindows(s, _Frame(wall, w, d), p.windows);
