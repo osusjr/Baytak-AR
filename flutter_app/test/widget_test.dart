@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -838,6 +839,227 @@ void main() {
       expect(hit!.widthM, closeTo(3.2, 1e-6));
       expect(hit.runs.single.b, closeTo(2.74, 1e-6));
       expect(await ScanCache.lookup([9, 9, 9]), isNull);
+    });
+  });
+
+  group('Tall cabinets + add/remove (b30)', () {
+    test('tall flag survives the JSON round-trip and 0.6 m is legal', () {
+      final plan = LayoutPlan(widthM: 3.6, depthM: 3.0, runs: [
+        RunPlan(wall: Wall.west, a: 0.02, b: 0.62, tall: true),
+      ]);
+      final back = LayoutPlan.fromJson(
+          jsonDecode(jsonEncode(plan.toJson())) as Map<String, dynamic>);
+      expect(back.runs, hasLength(1));
+      expect(back.runs.single.tall, isTrue);
+      expect(back.runs.single.length, closeTo(0.6, 1e-6));
+    });
+
+    test('tall + base runs never merge - the counter is trimmed back', () {
+      final tall = RunPlan(wall: Wall.north, a: 0.02, b: 0.62, tall: true);
+      final base = RunPlan(
+          wall: Wall.north, a: 0.40, b: 3.0, sinkAt: 1.4, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 3.6, depthM: 3.0, runs: [tall, base]);
+      normalizePlan(plan);
+      expect(plan.runs, hasLength(2));
+      expect(base.a, greaterThanOrEqualTo(tall.b - 1e-9));
+      expect(tall.a, closeTo(0.02, 1e-6)); // the tall unit does not move
+      expect(tall.tall, isTrue);
+    });
+
+    test('a dragged counter never swallows a freestanding fridge', () {
+      final counter = RunPlan(
+          wall: Wall.north, a: 0.5, b: 1.6, sinkAt: 1.0, uppers: true);
+      final fridge = RunPlan(
+          wall: Wall.north, a: 1.4, b: 2.2, fridge: 'start');
+      final plan =
+          LayoutPlan(widthM: 3.6, depthM: 3.0, runs: [counter, fridge]);
+      normalizePlan(plan);
+      expect(plan.runs, hasLength(2));
+      expect(fridge.a, closeTo(1.4, 1e-6));
+      expect(fridge.b, closeTo(2.2, 1e-6));
+      expect(counter.b, lessThanOrEqualTo(fridge.a + 1e-9));
+    });
+
+    test('island seating flips away from an attached run', () {
+      final plan = LayoutPlan(
+        widthM: 4.2,
+        depthM: 3.6,
+        runs: [
+          RunPlan(
+              wall: Wall.north,
+              a: 0.1,
+              b: 4.1,
+              sinkAt: 1.0,
+              rangeAt: 3.0,
+              uppers: true),
+        ],
+        island: IslandPlan(
+            x0: 1.2, z0: 0.66, w: 1.6, d: 0.9, seating: Wall.north),
+      );
+      normalizePlan(plan);
+      expect(plan.island, isNotNull);
+      expect(plan.island!.seating, Wall.south);
+    });
+
+    test('appliances are rejected on tall units', () {
+      final tall = RunPlan(wall: Wall.north, a: 0.02, b: 1.62, tall: true);
+      final plan = LayoutPlan(widthM: 3.6, depthM: 3.0, runs: [tall]);
+      final editor = PlanEditor(plan);
+      expect(editor.place(ApplianceKind.sink, Wall.north, 0.8), isFalse);
+      expect(editor.place(ApplianceKind.fridge, Wall.north, 0.8), isFalse);
+      expect(tall.hasAppliance, isFalse);
+    });
+
+    test('addRun places base and tall units without overlap', () {
+      final plan = LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [
+        RunPlan(
+            wall: Wall.north,
+            a: 0.8,
+            b: 4.1,
+            sinkAt: 1.4,
+            rangeAt: 3.0,
+            uppers: true),
+      ]);
+      final editor = PlanEditor(plan);
+      expect(editor.addRun(tall: true), isTrue);
+      final tall = plan.runs.firstWhere((r) => r.tall);
+      expect(tall.length, closeTo(0.6, 0.05));
+      expect(editor.addRun(), isTrue);
+      expect(plan.runs.length, 3);
+      // and the user can delete what they added
+      expect(editor.removeRun(tall), isTrue);
+      expect(plan.runs.any((r) => r.tall), isFalse);
+    });
+
+    test('a tall unit resizes down to a single 0.55 m column', () {
+      final tall = RunPlan(wall: Wall.north, a: 0.02, b: 1.52, tall: true);
+      final plan = LayoutPlan(widthM: 3.6, depthM: 3.0, runs: [tall]);
+      final editor = PlanEditor(plan);
+      expect(editor.resizeRun(tall, startEnd: false, v: 0.6), isTrue);
+      expect(tall.length, greaterThanOrEqualTo(0.55 - 1e-9));
+      expect(tall.length, lessThan(0.7));
+    });
+  });
+
+  group('No-overlap invariant (b30 fuzz)', () {
+    // real built geometry: the counter part is 0.655 deep and only the
+    // 0.8 m fridge SLOT is 0.75 deep - modelling the whole run at 0.75
+    // would flag legal corner clearances as overlaps
+    List<double> spanRect(
+        Wall wall, double a, double b, double depth, double w, double d) {
+      return switch (wall) {
+        Wall.north => [a, 0.0, b, depth],
+        Wall.south => [a, d - depth, b, d],
+        Wall.west => [0.0, a, depth, b],
+        Wall.east => [w - depth, a, w, b],
+      };
+    }
+
+    List<List<double>> rectsOf(RunPlan r, double w, double d) {
+      if (r.fridge == null) {
+        return [spanRect(r.wall, r.a, r.b, 0.655, w, d)];
+      }
+      final fa = r.fridge == 'start' ? r.a : r.b - 0.8;
+      final fb = r.fridge == 'start' ? r.a + 0.8 : r.b;
+      return [
+        spanRect(r.wall, fa, fb, 0.75, w, d),
+        if (r.fridge == 'start' && r.b - fb > 0.01)
+          spanRect(r.wall, fb, r.b, 0.655, w, d),
+        if (r.fridge == 'end' && fa - r.a > 0.01)
+          spanRect(r.wall, r.a, fa, 0.655, w, d),
+      ];
+    }
+
+    bool hit(List<double> p, List<double> q) =>
+        p[0] < q[2] - 0.02 &&
+        q[0] < p[2] - 0.02 &&
+        p[1] < q[3] - 0.02 &&
+        q[1] < p[3] - 0.02;
+
+    List<String> overlapReport(LayoutPlan plan) {
+      final rects = <(String, int, List<double>)>[
+        for (var i = 0; i < plan.runs.length; i++)
+          for (final rect in rectsOf(plan.runs[i], plan.widthM, plan.depthM))
+            ('run$i:${plan.runs[i].wall.name}', i, rect),
+        if (plan.island != null)
+          ('island', -1, [
+            plan.island!.x0,
+            plan.island!.z0,
+            plan.island!.x0 + plan.island!.w,
+            plan.island!.z0 + plan.island!.d,
+          ]),
+      ];
+      final bad = <String>[];
+      for (var i = 0; i < rects.length; i++) {
+        for (var j = i + 1; j < rects.length; j++) {
+          if (rects[i].$2 == rects[j].$2) continue; // same run's own parts
+          if (hit(rects[i].$3, rects[j].$3)) {
+            bad.add('${rects[i].$1} x ${rects[j].$1}');
+          }
+        }
+      }
+      return bad;
+    }
+
+    test('300 random edit sequences never overlap cabinets', () {
+      for (var seed = 0; seed < 300; seed++) {
+        final rnd = math.Random(seed);
+        final plan = LayoutPlan(
+          widthM: 3.0 + rnd.nextDouble() * 1.8,
+          depthM: 2.8 + rnd.nextDouble() * 1.4,
+          runs: [
+            RunPlan(
+                wall: Wall.north,
+                a: 0.1,
+                b: 2.8,
+                sinkAt: 0.9,
+                rangeAt: 2.2,
+                uppers: true),
+            RunPlan(wall: Wall.west, a: 0.8, b: 2.4, fridge: 'end'),
+          ],
+          island: seed.isEven
+              ? IslandPlan(x0: 1.2, z0: 1.4, w: 1.4, d: 0.8)
+              : null,
+        );
+        normalizePlan(plan);
+        final editor = PlanEditor(plan);
+        for (var step = 0; step < 12; step++) {
+          final wall = Wall.values[rnd.nextInt(4)];
+          final m = (wall == Wall.north || wall == Wall.south)
+              ? plan.widthM
+              : plan.depthM;
+          final u = rnd.nextDouble() * m;
+          switch (rnd.nextInt(6)) {
+            case 0:
+              editor.place(
+                  ApplianceKind.values[rnd.nextInt(3)], wall, u);
+            case 1:
+              if (plan.runs.isNotEmpty) {
+                editor.moveRun(
+                    plan.runs[rnd.nextInt(plan.runs.length)], wall, u,
+                    mirror: rnd.nextBool());
+              }
+            case 2:
+              if (plan.runs.isNotEmpty) {
+                editor.resizeRun(plan.runs[rnd.nextInt(plan.runs.length)],
+                    startEnd: rnd.nextBool(), v: u);
+              }
+            case 3:
+              editor.moveIsland(rnd.nextDouble() * plan.widthM,
+                  rnd.nextDouble() * plan.depthM);
+            case 4:
+              editor.addRun(tall: rnd.nextBool());
+            case 5:
+              if (plan.runs.length > 1) {
+                editor.removeRun(plan.runs[rnd.nextInt(plan.runs.length)]);
+              }
+          }
+          final bad = overlapReport(plan);
+          expect(bad, isEmpty,
+              reason: 'seed $seed step $step left overlaps: $bad');
+        }
+      }
     });
   });
 

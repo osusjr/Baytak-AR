@@ -209,6 +209,20 @@ List<_Element> _buildElements(LayoutPlan plan, KitchenDesign design) {
     final f = _RunFrame(r.wall, plan.widthM, plan.depthM);
     var a = r.a, b = r.b;
     final boxes = <_EBox>[];
+    // b30 tall pantry: one floor-to-upper-top slab with stacked doors
+    if (r.tall) {
+      boxes.add(f.box(a, b, 0, 0.10, 0.02, 0.57, _shade(lower, 0.5)));
+      boxes.add(f.box(a, b, 0.10, 2.20, 0, 0.62, lower));
+      final n = math.max(1, ((b - a) / 0.60).round());
+      final bw = (b - a) / n;
+      for (var i = 0; i < n; i++) {
+        final ba = a + i * bw + 0.012, bb = a + (i + 1) * bw - 0.012;
+        boxes.add(f.box(ba, bb, 0.115, 1.295, 0.62, 0.638, lowerDoor));
+        boxes.add(f.box(ba, bb, 1.305, 2.19, 0.62, 0.638, lowerDoor));
+      }
+      out.add(_Element(_EKind.run, r, boxes));
+      continue;
+    }
     // fridge slab + its high cabinet
     if (r.fridge == 'start') {
       boxes.add(f.box(a, a + 0.70, 0, 1.86, 0, 0.75, steel));
@@ -809,6 +823,37 @@ class _IsoKitchenEditorState extends State<IsoKitchenEditor> {
                     fontSize: 11, color: Baytak.ink.withValues(alpha: 0.55)),
               ),
             ),
+            // b30: add cabinets at will - base counters or a tall pantry
+            PopupMenuButton<bool>(
+              tooltip: 'Add cabinets',
+              icon: const Icon(Icons.add_box_outlined, size: 19),
+              onSelected: (tall) {
+                ed.checkpoint();
+                if (ed.addRun(tall: tall)) {
+                  setState(() => _selected = null);
+                  widget.onEdited(tall ? 'add_tall' : 'add_run');
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      duration: const Duration(seconds: 3),
+                      content: Text(tall
+                          ? 'Tall cabinet added - hold it to drag it '
+                              'anywhere, drag its end dots to widen it'
+                          : 'Cabinets added - hold them to drag them '
+                              'anywhere')));
+                } else {
+                  ed.undoDiscardLast();
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content:
+                          Text('No wall has room - remove something first')));
+                }
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                    value: false, child: Text('Base cabinets (1.5 m)')),
+                PopupMenuItem(
+                    value: true,
+                    child: Text('Tall cabinet - floor to uppers (0.6 m)')),
+              ],
+            ),
             IconButton(
               tooltip: 'Rotate view',
               visualDensity: VisualDensity.compact,
@@ -816,23 +861,24 @@ class _IsoKitchenEditorState extends State<IsoKitchenEditor> {
               onPressed: () => setState(() => _k = (_k + 1) & 3),
             ),
             if (_selected != null) ...[
-              IconButton(
-                tooltip: _selected!.uppers
-                    ? 'Remove upper cabinets'
-                    : 'Add upper cabinets',
-                visualDensity: VisualDensity.compact,
-                icon: Icon(
-                    _selected!.uppers
-                        ? Icons.vertical_align_bottom
-                        : Icons.vertical_align_top,
-                    size: 19),
-                onPressed: () {
-                  ed.checkpoint();
-                  setState(() => _selected!.uppers = !_selected!.uppers);
-                  ed.revision++;
-                  widget.onEdited('toggle_uppers');
-                },
-              ),
+              if (!_selected!.tall)
+                IconButton(
+                  tooltip: _selected!.uppers
+                      ? 'Remove upper cabinets'
+                      : 'Add upper cabinets',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                      _selected!.uppers
+                          ? Icons.vertical_align_bottom
+                          : Icons.vertical_align_top,
+                      size: 19),
+                  onPressed: () {
+                    ed.checkpoint();
+                    setState(() => _selected!.uppers = !_selected!.uppers);
+                    ed.revision++;
+                    widget.onEdited('toggle_uppers');
+                  },
+                ),
               IconButton(
                 tooltip: 'Delete this counter',
                 visualDensity: VisualDensity.compact,

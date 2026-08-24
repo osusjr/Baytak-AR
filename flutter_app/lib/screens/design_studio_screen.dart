@@ -1266,7 +1266,9 @@ class KitchenElevationPainter extends CustomPainter {
   final int revision;
 
   RunPlan get _primary {
-    final runs = [...plan.runs];
+    // the elevation shows a COUNTER run; tall pantries render in 3D/plan
+    final counters = plan.runs.where((r) => !r.tall).toList();
+    final runs = counters.isEmpty ? [...plan.runs] : counters;
     runs.sort((a, b) {
       int score(RunPlan r) =>
           ((r.rangeAt != null ? 2 : 0) +
@@ -1526,7 +1528,8 @@ class KitchenPlanPainter extends CustomPainter {
         case Wall.east:
           runRect = rc(w - 0.62, r.a, w, r.b);
       }
-      fill(runRect, worktop);
+      // tall pantry units have no worktop - show them in cabinet colour
+      fill(runRect, r.tall ? lower : worktop);
       canvas.drawRect(
           runRect,
           Paint()

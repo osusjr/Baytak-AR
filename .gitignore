@@ -8,3 +8,5 @@ Thumbs.db
 # python prototype outputs
 tools/out_design_proto/
 __pycache__/
+tools/normalizer_out/
+tools/tex_cache/

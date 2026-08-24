@@ -45,6 +45,7 @@ class RunPlan {
     this.fridge, // 'start' | 'end' | null
     this.uppers = false,
     this.auto = false,
+    this.tall = false,
     double? origA,
     double? origB,
   })  : origA = origA ?? a,
@@ -56,6 +57,11 @@ class RunPlan {
   double? rangeAt;
   String? fridge;
   bool uppers;
+
+  /// b30: a TALL unit (pantry/larder) - floor-to-upper-top carcass with
+  /// stacked doors instead of base+worktop+uppers. Hosts no appliances
+  /// (no worktop). Same plan footprint rules as a counter run.
+  bool tall;
 
   /// True for runs the drag editor created to host a dropped appliance.
   /// When the appliance moves away again the normalizer removes the run -
@@ -141,6 +147,7 @@ class LayoutPlan {
               'fridge': r.fridge,
               'uppers': r.uppers,
               if (r.auto) 'auto': true,
+              if (r.tall) 'tall': true,
               if ((r.origA - r.a).abs() > 1e-9) 'orig_a': r.origA,
               if ((r.origB - r.b).abs() > 1e-9) 'orig_b': r.origB,
             }
@@ -194,9 +201,11 @@ class LayoutPlan {
       b = b.clamp(0.02, axisMax - 0.02).toDouble();
       final fr = '${r['fridge'] ?? ''}'.toLowerCase();
       final hasFridge = fr == 'start' || fr == 'end';
+      final isTall = r['tall'] == true;
       // fridge-only runs (a freestanding fridge from the drag editor) are
-      // exactly 0.8 m; counter runs need 0.9 m to fit a cabinet bay
-      if (b - a < (hasFridge ? 0.75 : 0.9)) continue;
+      // exactly 0.8 m; counter runs need 0.9 m to fit a cabinet bay; a
+      // tall pantry can be a single 0.6 m column (b30)
+      if (b - a < (hasFridge ? 0.75 : isTall ? 0.55 : 0.9)) continue;
       double? within(dynamic v) {
         final p = numOf(v, -1, axisMax, -1);
         if (p < a + 0.42 || p > b - 0.42) return null;
@@ -217,6 +226,7 @@ class LayoutPlan {
         fridge: hasFridge ? fr : null,
         uppers: r['uppers'] == true,
         auto: r['auto'] == true,
+        tall: isTall,
         origA: orig(r['orig_a']),
         origB: orig(r['orig_b']),
       ));
@@ -469,7 +479,15 @@ Future<Map<String, Uint8List>> _loadTextures() async {
   if (cached != null) return cached;
   final out = <String, Uint8List>{};
   for (final n in _matTexture.values.toSet()) {
-    final d = await rootBundle.load('assets/textures/$n.png');
+    // b30: photoreal JPEG textures (tools/fetch_textures.py) are
+    // preferred; the original PNGs remain as fallback so a slot without
+    // an upgraded texture keeps working
+    ByteData d;
+    try {
+      d = await rootBundle.load('assets/textures/$n.jpg');
+    } catch (_) {
+      d = await rootBundle.load('assets/textures/$n.png');
+    }
     out[n] = d.buffer.asUint8List(d.offsetInBytes, d.lengthInBytes);
   }
   return _texCache = out;
@@ -616,8 +634,44 @@ void _doorFront(_Scene s, _Frame f, double u0, double u1, double y0,
   }
 }
 
+/// b30 tall unit (pantry/larder): floor-to-upper-top carcass with stacked
+/// door leaves. Uses the lower-cabinet material slots so the studio's
+/// 'lower' finish drives it. No worktop, no splash, no uppers.
+/// Coordinates FROZEN from tools/design_studio_proto.py build_tall.
+void _buildTall(_Scene s, _Frame f, RunPlan r, KitchenDesign design) {
+  final a = r.a, b = r.b;
+  final handle = design.handle, door = design.door;
+  f.box(s, a + 0.02, b - 0.02, 0, _th, 0.02, _bd - 0.05, 'toe');
+  f.box(s, a, b, _th, _uy1, 0.0, _bd, 'walnut');
+  final n = math.max(1, ((b - a) / 0.60).round());
+  final bw = (b - a) / n;
+  for (var k = 0; k < n; k++) {
+    final ba = a + k * bw + 0.009, bb = a + (k + 1) * bw - 0.009;
+    _doorFront(s, f, ba, bb, _th + 0.008, 1.295, _bd, _bd + 0.017,
+        'walnut_door', door);
+    _doorFront(s, f, ba, bb, 1.305, _uy1 - 0.008, _bd, _bd + 0.017,
+        'walnut_door', door);
+    final c = (ba + bb) / 2;
+    if (handle == 'bar') {
+      f.box(s, c - 0.011, c + 0.011, 0.95, 1.25, _bd + 0.019, _bd + 0.046,
+          'brass');
+      f.box(s, c - 0.011, c + 0.011, 1.35, 1.65, _bd + 0.019, _bd + 0.046,
+          'brass');
+    } else if (handle == 'knob') {
+      f.box(s, c - 0.016, c + 0.016, 1.24, 1.272, _bd + 0.017, _bd + 0.049,
+          'brass');
+      f.box(s, c - 0.016, c + 0.016, 1.34, 1.372, _bd + 0.017, _bd + 0.049,
+          'brass');
+    }
+  }
+}
+
 void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
     KitchenDesign design) {
+  if (r.tall) {
+    _buildTall(s, f, r, design);
+    return;
+  }
   var a = r.a, b = r.b;
   final handle = design.handle, door = design.door;
 
@@ -715,13 +769,47 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
   }
 }
 
-void _buildIsland(_Scene s, IslandPlan i, double w, double d) {
+void _buildIsland(_Scene s, IslandPlan i, double w, double d,
+    [List<RunPlan> runs = const []]) {
   final x0 = i.x0, x1 = i.x0 + i.w, z0 = i.z0, z1 = i.z0 + i.d;
   s.box(x0 + 0.05, 0, z0 + 0.05, x1 - 0.05, _th, z1 - 0.05, 'toe');
   s.box(x0, _th, z0, x1, _bh, z1, 'olive');
 
-  // quartz top: 5 cm lip all round + 30 cm overhang on the seating side
-  var tx0 = x0 - 0.05, tx1 = x1 + 0.05, tz0 = z0 - 0.05, tz1 = z1 + 0.05;
+  // b30: the 5 cm worktop lip is SUPPRESSED on any side that touches a
+  // cabinet run (the normalizer allows attached peninsulas - the lip
+  // jutting into the neighbouring worktop read as "cabinets overlap").
+  // Validated in tools/design_studio_proto.py build_island.
+  bool sideClear(String side) {
+    for (final r in runs) {
+      final depth = r.fridge != null ? 0.75 : _cd;
+      final (rx0, rz0, rx1, rz1) = switch (r.wall) {
+        Wall.north => (r.a, 0.0, r.b, depth),
+        Wall.south => (r.a, d - depth, r.b, d),
+        Wall.west => (0.0, r.a, depth, r.b),
+        Wall.east => (w - depth, r.a, w, r.b),
+      };
+      if ((side == 'x0' || side == 'x1') && !(z0 < rz1 && rz0 < z1)) {
+        continue;
+      }
+      if ((side == 'z0' || side == 'z1') && !(x0 < rx1 && rx0 < x1)) {
+        continue;
+      }
+      final gap = switch (side) {
+        'x0' => x0 - rx1,
+        'x1' => rx0 - x1,
+        'z0' => z0 - rz1,
+        _ => rz0 - z1,
+      };
+      if (gap >= -0.02 && gap < 0.055) return false;
+    }
+    return true;
+  }
+
+  // quartz top: 5 cm lip where clear + 30 cm overhang on the seating side
+  var tx0 = x0 - (sideClear('x0') ? 0.05 : 0.0);
+  var tx1 = x1 + (sideClear('x1') ? 0.05 : 0.0);
+  var tz0 = z0 - (sideClear('z0') ? 0.05 : 0.0);
+  var tz1 = z1 + (sideClear('z1') ? 0.05 : 0.0);
   switch (i.seating) {
     case Wall.north:
       tz0 = z0 - 0.30;
@@ -836,7 +924,7 @@ _Scene _buildPlan(LayoutPlan p, KitchenDesign design) {
     _drawWallWindows(s, _Frame(wall, w, d), p.windows);
   }
   final isl = p.island;
-  if (isl != null) _buildIsland(s, isl, w, d);
+  if (isl != null) _buildIsland(s, isl, w, d, p.runs);
   return s;
 }
 
@@ -940,8 +1028,18 @@ Uint8List _writeGlb(_Scene scene, String name, Map<String, List<double>> mats,
 
   final images = <Map<String, dynamic>>[];
   for (final name in texIndex.keys) {
-    final iv = addView(textures[name]!, 0);
-    images.add({'bufferView': iv, 'mimeType': 'image/png', 'name': name});
+    final bytes = textures[name]!;
+    final iv = addView(bytes, 0);
+    // sniff the container - b30 ships JPEG textures, older PNGs remain
+    final jpeg = bytes.length > 3 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF;
+    images.add({
+      'bufferView': iv,
+      'mimeType': jpeg ? 'image/jpeg' : 'image/png',
+      'name': name
+    });
   }
 
   final materials = [
