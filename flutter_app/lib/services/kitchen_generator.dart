@@ -670,6 +670,23 @@ void _doorFront(_Scene s, _Frame f, double u0, double u1, double y0,
   return (wa, wb);
 }
 
+/// b32 IKEA-style module layout: uniform 0.60 m doors from [a], the
+/// remainder as a narrower end bay - a door when >= 0.30 m, else a BLANK
+/// FILLER strip (carcass face, no door), like the filler pieces a real
+/// planner inserts. Public: the iso editor lays its door fronts out with
+/// the same bays. Validated in tools/design_studio_proto.py door_bays.
+List<(double, double, bool)> doorBays(double a, double b) {
+  final l = b - a;
+  final n = (l / 0.60).floor();
+  final rem = l - n * 0.60;
+  if (n == 0) return [(a, b, true)];
+  final bays = <(double, double, bool)>[
+    for (var k = 0; k < n; k++) (a + k * 0.60, a + (k + 1) * 0.60, true),
+  ];
+  if (rem > 0.02) bays.add((b - rem, b, rem >= 0.30));
+  return bays;
+}
+
 /// b30 tall unit (pantry/larder): floor-to-upper-top carcass with stacked
 /// door leaves. Uses the lower-cabinet material slots so the studio's
 /// 'lower' finish drives it. No worktop, no splash, no uppers.
@@ -730,11 +747,11 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
   f.box(s, wa, wb, _bh, _ctop, 0.0, _cd, 'basalt');
   f.box(s, a, b, _ctop, 1.46, 0.0, 0.02, 'splash');
 
-  // door bays, skipping the range slot
-  final n = math.max(2, ((b - a) / 0.60).round());
-  final bw = (b - a) / n;
-  for (var k = 0; k < n; k++) {
-    final ba = a + k * bw + 0.009, bb = a + (k + 1) * bw - 0.009;
+  // b32 IKEA-style module bays (uniform 0.60 doors + filler), skipping
+  // the range slot
+  for (final (ba0, bb0, hasDoor) in doorBays(a, b)) {
+    if (!hasDoor) continue; // filler strip - carcass face shows
+    final ba = ba0 + 0.009, bb = bb0 - 0.009;
     final c = (ba + bb) / 2;
     if (r.rangeAt != null && (c - r.rangeAt!).abs() < 0.42) continue;
     _doorFront(s, f, ba, bb, _th + 0.008, _bh - 0.008, _bd, _bd + 0.017,
@@ -794,10 +811,9 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
     }
     for (final sp in spans) {
       f.box(s, sp[0], sp[1], _uy0, _uy1, 0.0, _ud, 'upper');
-      final nd = math.max(1, ((sp[1] - sp[0]) / 0.55).round());
-      final dw = (sp[1] - sp[0]) / nd;
-      for (var k = 0; k < nd; k++) {
-        final ba = sp[0] + k * dw + 0.008, bb = sp[0] + (k + 1) * dw - 0.008;
+      for (final (ba0, bb0, hasDoor) in doorBays(sp[0], sp[1])) {
+        if (!hasDoor) continue;
+        final ba = ba0 + 0.008, bb = bb0 - 0.008;
         _doorFront(s, f, ba, bb, _uy0 + 0.008, _uy1 - 0.008, _ud,
             _ud + 0.015, 'upper_door', door);
         _upperHandle(s, f, (ba + bb) / 2, handle);

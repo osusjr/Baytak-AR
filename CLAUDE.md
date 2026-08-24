@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 31).
+(internal build counter in lib/theme.dart, currently 32).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -193,6 +193,18 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   moveRun/resizeRun/place may silently delete another non-auto run
   (merge-absorption counts as joined; a moving freestanding fridge's
   source is exempt) - "cabinets adjust" = trim-and-regrow only.
+- b32 IKEA-planner behaviours (researched from IKEA's own quick guide):
+  (1) MAGNETIC SNAP in moveRun - released within 0.18 m of a neighbour
+  edge/wall end/clearance boundary the run lands FLUSH (same-kind then
+  merges - "snap into place"); snap candidates re-validated through
+  _clampIntoFree so a snap can never land illegally. (2) doorBays()
+  (kitchen_generator.dart, PUBLIC, validated in design_studio_proto.py
+  door_bays): uniform 0.60 m door modules + remainder bay (door >= 0.30,
+  else blank FILLER strip) replace the stretch-to-fit equal division -
+  used by the GLB generator (lower + upper doors) AND the iso editor.
+  (3) LIVE MEASUREMENTS - the iso drag label shows the gap to the
+  nearest neighbour/wall on each side, updating per tick
+  ("0.45 ◀ 1.50 m ▶ 0.30").
 - b29 photo render: lib/services/photo_render.dart (renderPrompt is pure,
   unit-tested: describes runs wall-by-wall + finish LABELS from the
   option tables) + lib/screens/photo_render_screen.dart; entry is the

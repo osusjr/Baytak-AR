@@ -1060,6 +1060,60 @@ void main() {
     });
   });
 
+  group('IKEA planner behaviours (b32)', () {
+    test('door bays are uniform 0.60 modules with a filler remainder', () {
+      final even = doorBays(0.0, 2.4);
+      expect(even, hasLength(4));
+      for (var i = 0; i < 4; i++) {
+        expect(even[i].$1, closeTo(i * 0.6, 1e-9));
+        expect(even[i].$2, closeTo((i + 1) * 0.6, 1e-9));
+        expect(even[i].$3, isTrue);
+      }
+      final withDoor = doorBays(0.0, 1.5);
+      expect(withDoor.last.$3, isTrue); // 0.30 remainder gets a door
+      expect(withDoor.last.$2 - withDoor.last.$1, closeTo(0.30, 1e-9));
+      final withFiller = doorBays(0.0, 1.45);
+      expect(withFiller.last.$3, isFalse); // 0.25 remainder = filler
+      // bays always tile the span contiguously
+      for (var i = 1; i < withFiller.length; i++) {
+        expect(withFiller[i].$1, closeTo(withFiller[i - 1].$2, 1e-9));
+      }
+    });
+
+    test('a drag released NEAR a neighbour snaps flush onto it', () {
+      final left = RunPlan(
+          wall: Wall.north, a: 0.02, b: 1.52, sinkAt: 0.8, uppers: true);
+      final fridge =
+          RunPlan(wall: Wall.north, a: 3.0, b: 3.8, fridge: 'start');
+      final plan =
+          LayoutPlan(widthM: 4.6, depthM: 3.2, runs: [left, fridge]);
+      final editor = PlanEditor(plan);
+      // release the fridge-neighbour drag 12 cm short of the left run:
+      // desired a = 1.64, left.b = 1.52 -> snap flush
+      expect(editor.moveRun(fridge, Wall.north, 2.04), isTrue);
+      expect(fridge.a, closeTo(1.52, 1e-6));
+    });
+
+    test('a drag released near the wall end snaps into the corner', () {
+      final run = RunPlan(
+          wall: Wall.north, a: 1.5, b: 3.0, sinkAt: 2.2, uppers: true);
+      final plan = LayoutPlan(widthM: 4.6, depthM: 3.2, runs: [run]);
+      final editor = PlanEditor(plan);
+      // desired a = 0.15 - within snap distance of the 0.02 corner
+      expect(editor.moveRun(run, Wall.north, 0.9), isTrue);
+      expect(run.a, closeTo(0.02, 1e-6));
+    });
+
+    test('far from anything, no snap happens - free placement stays', () {
+      final run = RunPlan(
+          wall: Wall.north, a: 0.02, b: 1.52, sinkAt: 0.8, uppers: true);
+      final plan = LayoutPlan(widthM: 4.6, depthM: 3.2, runs: [run]);
+      final editor = PlanEditor(plan);
+      expect(editor.moveRun(run, Wall.north, 2.3), isTrue);
+      expect(run.a, closeTo(2.3 - 0.75, 1e-6)); // exactly where dropped
+    });
+  });
+
   group('No-overlap invariant (b30 fuzz)', () {
     // real built geometry: the counter part is 0.655 deep and only the
     // 0.8 m fridge SLOT is 0.75 deep - modelling the whole run at 0.75

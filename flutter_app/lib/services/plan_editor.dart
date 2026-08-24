@@ -292,9 +292,32 @@ class PlanEditor {
     // and incompatible same-wall units - the run slides to the nearest
     // legal spot instead of trimming or deleting what it hits
     final desired = (u - len / 2).clamp(0.02, m - len - 0.02).toDouble();
-    final clamped = _clampIntoFree(wall, len, desired, _bands(wall, run));
+    final bands = _bands(wall, run);
+    final clamped = _clampIntoFree(wall, len, desired, bands);
     if (clamped == null) return false;
-    final a = clamped;
+    // b32 IKEA-style magnetic snap: released within [snapDist] of a
+    // neighbour's edge, a wall end or a clearance boundary, the run
+    // lands FLUSH on it ("move close to another cabinet to see it snap
+    // into place") - same-kind neighbours then merge seamlessly
+    const snapDist = 0.18;
+    var a = clamped;
+    var bestD = snapDist;
+    final snapTargets = <double>[
+      0.02,
+      m - len - 0.02,
+      for (final q in plan.runs)
+        if (!identical(q, run) && q.wall == wall) ...[q.b, q.a - len],
+      for (final (bLo, bHi) in bands) ...[bHi, bLo - len],
+    ];
+    for (final cand in snapTargets) {
+      final dist = (cand - clamped).abs();
+      if (dist >= bestD) continue;
+      final legal = _clampIntoFree(wall, len, cand, bands);
+      if (legal != null && (legal - cand).abs() < 1e-6) {
+        a = cand;
+        bestD = dist;
+      }
+    }
 
     RunPlan moved;
     if (wall == run.wall) {

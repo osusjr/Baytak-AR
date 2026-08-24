@@ -236,11 +236,10 @@ List<_Element> _buildElements(LayoutPlan plan, KitchenDesign design) {
     if (b - a >= 0.7) {
       boxes.add(f.box(a, b, 0, 0.10, 0.02, 0.57, _shade(lower, 0.5)));
       boxes.add(f.box(a, b, 0.10, 0.86, 0, 0.62, lower));
-      // door bays as slightly proud fronts
-      final n = math.max(2, ((b - a) / 0.60).round());
-      final bw = (b - a) / n;
-      for (var i = 0; i < n; i++) {
-        final ba = a + i * bw + 0.012, bb = a + (i + 1) * bw - 0.012;
+      // door bays as slightly proud fronts (b32: uniform IKEA modules)
+      for (final (ba0, bb0, hasDoor) in doorBays(a, b)) {
+        if (!hasDoor) continue;
+        final ba = ba0 + 0.012, bb = bb0 - 0.012;
         if (r.rangeAt != null && ((ba + bb) / 2 - r.rangeAt!).abs() < 0.42) {
           continue;
         }
@@ -1220,12 +1219,27 @@ class _OverlayPainter extends CustomPainter {
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2);
 
-      // label
+      // label (b32: IKEA-style live measurements - gaps to the nearest
+      // neighbour/wall on each side update every drag tick)
       String text;
       if (s._mode == _DragMode.run) {
         final t = s._wallTarget!;
-        text =
-            '${s._dragRun!.length.toStringAsFixed(2)} m on the ${t.$1.name} wall';
+        final r = s._dragRun!;
+        final len = r.length;
+        final m = s._wallLen(t.$1);
+        final ga = (t.$2 - len / 2)
+            .clamp(0.02, math.max(0.02, m - len - 0.02))
+            .toDouble();
+        var leftAt = 0.0, rightAt = m;
+        for (final q in s.widget.plan.runs) {
+          if (identical(q, r) || q.wall != t.$1) continue;
+          if (q.b <= ga + 0.01 && q.b > leftAt) leftAt = q.b;
+          if (q.a >= ga + len - 0.01 && q.a < rightAt) rightAt = q.a;
+        }
+        final lg = math.max(0.0, ga - leftAt);
+        final rg = math.max(0.0, rightAt - (ga + len));
+        text = '${lg.toStringAsFixed(2)} ◀ ${len.toStringAsFixed(2)} m '
+            '▶ ${rg.toStringAsFixed(2)}';
       } else {
         final t = s._floorTarget!;
         text = 'island at ${t.$1.toStringAsFixed(2)} × '
