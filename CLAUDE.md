@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 29).
+(internal build counter in lib/theme.dart, currently 30).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -154,6 +154,30 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   'origin_plan_v1'/'origin_design_v1' (freshOrigin flag; restoreLast
   passes false) - the app-bar "Original" action returns to the first
   generated model WITHOUT an AI scan.
+- b30 realism + cabinet freedom: (1) PHOTOREAL TEXTURES - CC0 1K JPEGs
+  from ambientCG, fetched/processed by tools/fetch_textures.py
+  (tint-friendly: partial desaturation + mean-luminance matched to the
+  old PNGs so the frozen v17 tint palette stays calibrated); loader
+  prefers assets/textures/<slot>.jpg over .png, GLB writer sniffs
+  JPEG/PNG magic for mimeType. Swap a slot = rerun the script (client
+  materials go in tex_cache/<slot>_override.jpg). (2) TALL UNITS -
+  RunPlan.tall ('tall' in JSON): floor-to-uppers pantry (0.10..2.20 m,
+  0.62 deep, stacked doors, lower-finish slots; geometry FROZEN from
+  design_studio_proto.py build_tall); min length 0.55; hosts NO
+  appliances (normalizer strips, editor rejects); tall|base and
+  fridge-only|plain pairs NEVER merge - the plain run is trimmed back to
+  touching (fixes the merge swallowing a freestanding fridge). (3)
+  ADD/REMOVE - PlanEditor.addRun(tall:) places at the corner-most free
+  spot of the fullest wall, PRE-CHECKED against perpendicular runs +
+  island (no mutate-rollback: UI-held RunPlan references must survive);
+  iso editor "+" menu adds base/tall, delete already existed. (4)
+  OVERLAP FIXES - island worktop LIP suppressed on sides touching a run
+  (was interpenetrating the neighbour's worktop by 4.5 cm) and island
+  SEATING flips away from an attached side (stools/overhang buried in
+  cabinets); _reclampAfterFridge guards the inverted-clamp crash on
+  ~1.5 m runs. A 300-seed FUZZ test (widget_test.dart) asserts the
+  no-overlap invariant over random place/move/resize/add/remove/island
+  sequences - keep it green when touching editor/normalizer rules.
 - b29 photo render: lib/services/photo_render.dart (renderPrompt is pure,
   unit-tested: describes runs wall-by-wall + finish LABELS from the
   option tables) + lib/screens/photo_render_screen.dart; entry is the

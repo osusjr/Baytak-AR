@@ -38,6 +38,7 @@ class PlanNormalizer {
   static const attachEps = 0.10; // gap below this = attached peninsula
   static const islandMin = 0.60; // island dropped if thinner after shrink
   static const minRun = 0.90; // min counter run length
+  static const tallMin = 0.55; // b30: a tall pantry can be one 0.6 m column
   static const fridgeOnlyLen = 0.80; // exact fridge-only run length
   static const fridgeOnlyEps = 0.05;
   static const edgeMargin = 0.45; // sink/range distance from run ends
@@ -90,7 +91,14 @@ bool _rectsOverlap(List<double> p, List<double> q, [double eps = 0.01]) =>
 
 double _minLen(RunPlan r) => r.fridge != null
     ? PlanNormalizer.fridgeOnlyLen - PlanNormalizer.fridgeOnlyEps
-    : PlanNormalizer.minRun;
+    : r.tall
+        ? PlanNormalizer.tallMin
+        : PlanNormalizer.minRun;
+
+/// A freestanding fridge from the drag editor: fridge mark + no counter.
+bool _fridgeOnly(RunPlan r) =>
+    r.fridge != null &&
+    r.length <= PlanNormalizer.fridgeOnlyLen + 0.06;
 
 /// Trim run [r] so [a,b] avoids the world-axis band [blkA,blkB].
 /// Returns false when r cannot survive the trim.
@@ -214,6 +222,16 @@ List<String> normalizePlan(LayoutPlan plan) {
   // sweeping it first lets its trimmed neighbours regrow in the SAME
   // normalize call that removes it (sweeping after regrow made the
   // restore land one normalize late and broke idempotence)
+  for (final r in plan.runs) {
+    // b30: a tall pantry has no worktop - strip anything a bad parse or
+    // drop put on it BEFORE the passes reason about its geometry
+    if (r.tall && r.hasAppliance) {
+      notes.add('moved appliances off a tall cabinet');
+      r.sinkAt = null;
+      r.rangeAt = null;
+      r.fridge = null;
+    }
+  }
   plan.runs.removeWhere((r) {
     final ghost = r.auto && !r.hasAppliance;
     if (ghost) {
@@ -242,18 +260,57 @@ List<String> normalizePlan(LayoutPlan plan) {
       : x.wall.index.compareTo(y.wall.index));
   final merged = <RunPlan>[];
   for (final r in kept) {
-    final prev = merged.isNotEmpty && merged.last.wall == r.wall
+    var prev = merged.isNotEmpty && merged.last.wall == r.wall
         ? merged.last
         : null;
+    // b30: INCOMPATIBLE neighbours never merge - a tall pantry and a
+    // counter run are different heights, and a freestanding fridge must
+    // not be swallowed into a dragged counter (the merge used to
+    // teleport its fridge mark to the counter's far end). The plain run
+    // yields: it is trimmed back to touching (validated in
+    // tools/plan_normalizer_proto.py).
+    if (prev != null && r.a <= prev.b + 0.05) {
+      final incompatible = prev.tall != r.tall ||
+          _fridgeOnly(prev) != _fridgeOnly(r);
+      if (incompatible && r.a < prev.b - 0.01) {
+        final prevYields =
+            _fridgeOnly(r) || (r.tall && !_fridgeOnly(prev));
+        notes.add(
+            'trimmed cabinets on the ${r.wall.name} wall to clear a '
+            'fixed unit');
+        if (prevYields) {
+          prev.b = r.a;
+          if (prev.length < _minLen(prev) - 1e-9) {
+            merged.removeLast();
+            notes.add('dropped a sliver of cabinet on the '
+                '${r.wall.name} wall');
+            prev = merged.isNotEmpty && merged.last.wall == r.wall
+                ? merged.last
+                : null;
+          }
+        } else {
+          r.a = prev.b;
+          if (r.length < _minLen(r) - 1e-9) {
+            notes.add('dropped a sliver of cabinet on the '
+                '${r.wall.name} wall');
+            continue;
+          }
+        }
+      }
+    }
     // runs that merely TOUCH at a fridge slot stay separate - that gap IS
     // the fridge (the editor's mid-run split); overlapping runs and plain
-    // touching counters merge
+    // touching counters merge. b30: tall/base and fridge-only/plain pairs
+    // stay separate too (they merely touch after the trim above).
     final fridgeAtSeam =
         prev != null && (prev.fridge == 'end' || r.fridge == 'start');
     final touching = prev != null && r.a >= prev.b - 0.01;
+    final kindSplit = prev != null &&
+        (prev.tall != r.tall || _fridgeOnly(prev) != _fridgeOnly(r));
     if (prev != null &&
         r.a <= prev.b + 0.05 &&
-        !(touching && fridgeAtSeam)) {
+        !(touching && fridgeAtSeam) &&
+        !kindSplit) {
       prev.b = math.max(prev.b, r.b);
       prev.sinkAt ??= r.sinkAt;
       prev.rangeAt ??= r.rangeAt;
@@ -476,6 +533,26 @@ List<String> normalizePlan(LayoutPlan plan) {
         default:
           z1 = front - PlanNormalizer.walkway;
       }
+    }
+
+    // b30: the seating side must never be the ATTACHED side - the 30 cm
+    // worktop overhang and the stools would bury themselves in the
+    // attached run (the reported "island overlaps the cabinets"). Flip
+    // the seating to the opposite (walkway'd or free) side.
+    final seatSide = switch (isl.seating) {
+      Wall.north => 'z0',
+      Wall.south => 'z1',
+      Wall.west => 'x0',
+      Wall.east => 'x1',
+    };
+    if (state[seatSide]?.$1 == 1 && !demoted.contains(seatSide)) {
+      isl.seating = switch (seatSide) {
+        'z0' => Wall.south,
+        'z1' => Wall.north,
+        'x0' => Wall.east,
+        _ => Wall.west,
+      };
+      notes.add('turned the island seating away from the cabinets');
     }
 
     if (x1 - x0 < PlanNormalizer.islandMin - 1e-9 ||

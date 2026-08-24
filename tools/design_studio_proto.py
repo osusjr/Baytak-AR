@@ -327,9 +327,40 @@ def door_front(f, s, u0, u1, y0, y1, v_back, v_face, mat, style):
         f.box(s, u0, u1, y0, y1, v_back, v_face, mat)
 
 
+def build_tall(s, f, r, handle_style="bar", door_style="slab"):
+    """b30 tall unit (pantry/larder): floor-to-upper-top carcass with
+    stacked door leaves. Uses the lower-cabinet material slots so the
+    studio's 'lower' finish drives it. No worktop, no splash, no uppers."""
+    a, b = r["a"], r["b"]
+    f.box(s, a + 0.02, b - 0.02, 0, TH, 0.02, BD - 0.05, "toe")
+    f.box(s, a, b, TH, UY1, 0.0, BD, "walnut")
+    n = max(1, round((b - a) / 0.60))
+    bw = (b - a) / n
+    for k in range(n):
+        ba, bb = a + k * bw + 0.009, a + (k + 1) * bw - 0.009
+        door_front(f, s, ba, bb, TH + 0.008, 1.295, BD, BD + 0.017,
+                   "walnut_door", door_style)
+        door_front(f, s, ba, bb, 1.305, UY1 - 0.008, BD, BD + 0.017,
+                   "walnut_door", door_style)
+        c = (ba + bb) / 2
+        if handle_style == "bar":
+            f.box(s, c - 0.011, c + 0.011, 0.95, 1.25,
+                  BD + 0.019, BD + 0.046, "brass")
+            f.box(s, c - 0.011, c + 0.011, 1.35, 1.65,
+                  BD + 0.019, BD + 0.046, "brass")
+        elif handle_style == "knob":
+            f.box(s, c - 0.016, c + 0.016, 1.24, 1.272,
+                  BD + 0.017, BD + 0.049, "brass")
+            f.box(s, c - 0.016, c + 0.016, 1.34, 1.372,
+                  BD + 0.017, BD + 0.049, "brass")
+
+
 # --- run builder: mirror of Dart _buildRun + design hooks ------------------
 def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
               draw_windows=True):
+    if r.get("tall"):
+        build_tall(s, f, r, handle_style, door_style)
+        return
     a, b = r["a"], r["b"]
 
     if r.get("fridge") == "start":
@@ -417,11 +448,43 @@ def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
                 upper_handle(f, s, (ba + bb) / 2, handle_style)
 
 
-def build_island(s, i, w, d):
+def run_rect_proto(r, w, d):
+    """Plan rect of a run (mirror of the normalizer's run_rect)."""
+    depth = 0.75 if r.get("fridge") else CD
+    a, b = r["a"], r["b"]
+    if r["wall"] == "north":
+        return (a, 0.0, b, depth)
+    if r["wall"] == "south":
+        return (a, d - depth, b, d)
+    if r["wall"] == "west":
+        return (0.0, a, depth, b)
+    return (w - depth, a, w, b)  # east
+
+
+def build_island(s, i, w, d, runs=()):
     x0, x1, z0, z1 = i["x0"], i["x0"] + i["w"], i["z0"], i["z0"] + i["d"]
     s.box(x0 + 0.05, 0, z0 + 0.05, x1 - 0.05, TH, z1 - 0.05, "toe")
     s.box(x0, TH, z0, x1, BH, z1, "olive")
-    tx0, tx1, tz0, tz1 = x0 - 0.05, x1 + 0.05, z0 - 0.05, z1 + 0.05
+    # b30: the 5 cm worktop lip is SUPPRESSED on any side that touches a
+    # cabinet run (the normalizer allows attached peninsulas - the lip
+    # jutting into the neighbouring worktop read as "cabinets overlap")
+    def side_clear(side):
+        for r in runs:
+            rx0, rz0, rx1, rz1 = run_rect_proto(r, w, d)
+            if side in ("x0", "x1") and not (z0 < rz1 and rz0 < z1):
+                continue
+            if side in ("z0", "z1") and not (x0 < rx1 and rx0 < x1):
+                continue
+            gap = {"x0": x0 - rx1, "x1": rx0 - x1,
+                   "z0": z0 - rz1, "z1": rz0 - z1}[side]
+            if -0.02 <= gap < 0.055:
+                return False
+        return True
+
+    tx0 = x0 - (0.05 if side_clear("x0") else 0.0)
+    tx1 = x1 + (0.05 if side_clear("x1") else 0.0)
+    tz0 = z0 - (0.05 if side_clear("z0") else 0.0)
+    tz1 = z1 + (0.05 if side_clear("z1") else 0.0)
     seat = i.get("seating", "south")
     if seat == "north":
         tz0 = z0 - 0.30
@@ -480,7 +543,7 @@ def build_plan(plan, d):
         build_run(s, Frame(r["wall"], w, dp), r, plan.get("windows", []),
                   handle_style=d["handle"], door_style=d["door"])
     if plan.get("island"):
-        build_island(s, plan["island"], w, dp)
+        build_island(s, plan["island"], w, dp, plan["runs"])
     return s
 
 
@@ -536,7 +599,7 @@ def build_plan_b20(plan, d):
     for wl in walls:
         draw_wall_windows(s, Frame(wl, w, dp), wins)
     if plan.get("island"):
-        build_island(s, plan["island"], w, dp)
+        build_island(s, plan["island"], w, dp, plan["runs"])
     return s
 
 

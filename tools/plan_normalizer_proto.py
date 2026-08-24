@@ -93,8 +93,15 @@ def rects_overlap(p, q, eps=0.01):
             p[1] < q[3] - eps and q[1] < p[3] - eps)
 
 
+TALL_MIN = 0.55  # b30: a tall pantry unit can be a single 0.6 m column
+
+
 def min_len(r):
-    return FRIDGE_ONLY_LEN - FRIDGE_ONLY_EPS if r.get("fridge") else MIN_RUN
+    if r.get("fridge"):
+        return FRIDGE_ONLY_LEN - FRIDGE_ONLY_EPS
+    if r.get("tall"):
+        return TALL_MIN
+    return MIN_RUN
 
 
 def _trim_run_to_clear(r, blk_a, blk_b):
@@ -218,6 +225,14 @@ def normalize_plan(plan):
     # restore land one normalize late and broke idempotence)
     kept0 = []
     for r in plan["runs"]:
+        # b30: a tall pantry has no worktop - strip anything a bad parse
+        # or drop put on it BEFORE the passes reason about its geometry
+        if r.get("tall") and (r.get("sinkAt") is not None or
+                              r.get("rangeAt") is not None or
+                              r.get("fridge")):
+            notes.append("moved appliances off a tall cabinet")
+            r["sinkAt"] = r["rangeAt"] = None
+            r["fridge"] = None
         if r.get("auto") and r.get("sinkAt") is None and \
                 r.get("rangeAt") is None and not r.get("fridge"):
             notes.append("removed auto run left behind by a moved appliance")
@@ -238,17 +253,54 @@ def normalize_plan(plan):
             runs.append(r)
         else:
             notes.append(f"dropped degenerate run on {r['wall']}")
+    def fridge_only(r):
+        return r.get("fridge") and \
+            (r["b"] - r["a"]) <= FRIDGE_ONLY_LEN + 0.06
+
     merged = []
     for r in sorted(runs, key=lambda x: (x["wall"], x["a"])):
         prev = merged[-1] if merged and merged[-1]["wall"] == r["wall"] else None
+        # b30: INCOMPATIBLE neighbours never merge - a tall pantry and a
+        # counter run are different heights, and a freestanding fridge
+        # must not be swallowed into a dragged counter (the merge used to
+        # teleport its fridge mark to the counter's far end). The plain
+        # run yields: it is trimmed back to touching (the fridge/tall
+        # unit is the immovable one).
+        if prev is not None and r["a"] <= prev["b"] + 0.05:
+            incompatible = bool(prev.get("tall")) != bool(r.get("tall")) \
+                or fridge_only(prev) != fridge_only(r)
+            if incompatible and r["a"] < prev["b"] - 0.01:
+                prev_yields = fridge_only(r) or (
+                    r.get("tall") and not fridge_only(prev))
+                if prev_yields:
+                    prev["b"] = r["a"]
+                    notes.append(f"trimmed cabinets on {r['wall']} to "
+                                 "clear a fixed unit")
+                    if prev["b"] - prev["a"] < min_len(prev) - 1e-9:
+                        merged.pop()
+                        notes.append(f"dropped a sliver on {r['wall']}")
+                        prev = merged[-1] if merged and \
+                            merged[-1]["wall"] == r["wall"] else None
+                else:
+                    r["a"] = prev["b"]
+                    notes.append(f"trimmed cabinets on {r['wall']} to "
+                                 "clear a fixed unit")
+                    if r["b"] - r["a"] < min_len(r) - 1e-9:
+                        notes.append(f"dropped a sliver on {r['wall']}")
+                        continue
         # runs that merely TOUCH at a fridge slot stay separate - that gap
         # IS the fridge (the editor's mid-run split); overlapping runs and
-        # plain touching counters merge
+        # plain touching counters merge. b30: tall/base and fridge-only/
+        # plain pairs stay separate too (they merely touch after the trim
+        # above).
         fridge_at_seam = prev is not None and (
             prev.get("fridge") == "end" or r.get("fridge") == "start")
         touching = prev is not None and r["a"] >= prev["b"] - 0.01
+        kind_split = prev is not None and (
+            bool(prev.get("tall")) != bool(r.get("tall"))
+            or fridge_only(prev) != fridge_only(r))
         if prev and r["a"] <= prev["b"] + 0.05 and \
-                not (touching and fridge_at_seam):
+                not (touching and fridge_at_seam) and not kind_split:
             prev["b"] = max(prev["b"], r["b"])
             for k in ("sinkAt", "rangeAt"):
                 if prev.get(k) is None and r.get(k) is not None:
@@ -461,6 +513,18 @@ def normalize_plan(plan):
             else:
                 z1 = front - WALKWAY
 
+        # b30: the seating side must never be the ATTACHED side - the
+        # 30 cm worktop overhang and the stools would bury themselves in
+        # the attached run (the reported "island overlaps the cabinets").
+        # Flip the seating to the opposite (walkway'd or free) side.
+        side_of = {"north": "z0", "south": "z1", "west": "x0", "east": "x1"}
+        flip = {"z0": "south", "z1": "north", "x0": "east", "x1": "west"}
+        seat_side = side_of.get(isl.get("seating", "south"))
+        if seat_side and state.get(seat_side, ("free",))[0] == "attached" \
+                and seat_side not in demoted:
+            isl["seating"] = flip[seat_side]
+            notes.append("turned the island seating away from the cabinets")
+
         if x1 - x0 < ISLAND_MIN - 1e-9 or z1 - z0 < ISLAND_MIN - 1e-9:
             plan["island"] = None
             notes.append("dropped island - no walkable room for it")
@@ -475,6 +539,8 @@ def normalize_plan(plan):
 
     # ---- 4. appliance re-clamp ---------------------------------------------
     for r in plan["runs"]:
+        if r.get("tall"):
+            continue  # stripped in pass 0a - nothing to clamp
         a, b = r["a"], r["b"]
         if r.get("fridge") == "start":
             a += FRIDGE_SPAN
@@ -719,6 +785,73 @@ def case_split_half_gone():
     }
 
 
+def case_tall_corner():
+    """b30: a 0.6 m floor-to-uppers pantry column in the corner, next to
+    a perpendicular counter run - both must survive, no merge."""
+    return {
+        "w": 3.6, "d": 3.0,
+        "runs": [
+            {"wall": "west", "a": 0.02, "b": 0.62, "sinkAt": None,
+             "rangeAt": None, "fridge": None, "uppers": False, "tall": True},
+            {"wall": "north", "a": 0.7, "b": 3.5, "sinkAt": 1.4,
+             "rangeAt": 2.8, "fridge": None, "uppers": True},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_tall_base_separate():
+    """b30: tall + base touching on the SAME wall stay separate."""
+    return {
+        "w": 3.6, "d": 3.0,
+        "runs": [
+            {"wall": "north", "a": 0.02, "b": 0.62, "sinkAt": None,
+             "rangeAt": None, "fridge": None, "uppers": False, "tall": True},
+            {"wall": "north", "a": 0.62, "b": 3.0, "sinkAt": 1.4,
+             "rangeAt": None, "fridge": None, "uppers": True},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_base_dragged_onto_tall():
+    """b30: a counter run dragged OVER a tall unit is trimmed back to
+    touching - never merged into it (different heights)."""
+    p = case_tall_base_separate()
+    p["runs"][1]["a"] = 0.40  # overlaps the tall unit by 22 cm
+    return p
+
+
+def case_fridge_swallow():
+    """b30: a counter run dragged over a freestanding fridge must not
+    swallow it (the merge used to teleport the fridge mark)."""
+    return {
+        "w": 3.6, "d": 3.0,
+        "runs": [
+            {"wall": "north", "a": 0.5, "b": 1.6, "sinkAt": 1.0,
+             "rangeAt": None, "fridge": None, "uppers": True},
+            {"wall": "north", "a": 1.4, "b": 2.2, "sinkAt": None,
+             "rangeAt": None, "fridge": "start", "uppers": False},
+        ],
+        "island": None, "windows": [],
+    }
+
+
+def case_island_attached_seating():
+    """b30: island pulled to touch a run ON ITS SEATING SIDE - the
+    overhang + stools would bury into the cabinets; seating must flip."""
+    return {
+        "w": 4.2, "d": 3.6,
+        "runs": [
+            {"wall": "north", "a": 0.1, "b": 4.1, "sinkAt": 1.0,
+             "rangeAt": 3.0, "fridge": None, "uppers": True},
+        ],
+        "island": {"x0": 1.2, "z0": 0.66, "w": 1.6, "d": 0.9,
+                   "seating": "north", "cooktop": False},
+        "windows": [],
+    }
+
+
 def main():
     out = Path(__file__).resolve().parent / "normalizer_out"
     out.mkdir(exist_ok=True)
@@ -737,6 +870,11 @@ def main():
         "split_fridge_present": case_split_fridge_present(),
         "ghost_blocker": case_ghost_blocker(),
         "split_half_gone": case_split_half_gone(),
+        "tall_corner": case_tall_corner(),
+        "tall_base_separate": case_tall_base_separate(),
+        "base_dragged_onto_tall": case_base_dragged_onto_tall(),
+        "fridge_swallow": case_fridge_swallow(),
+        "island_attached_seating": case_island_attached_seating(),
     }
     failures = 0
     for name, plan in cases.items():
@@ -825,6 +963,32 @@ def main():
     assert abs(r["b"] - 3.0) < 1e-6, \
         f"fridge-anchored end must not slide into freed space (b={r['b']})"
     assert r["fridge"] == "end", "fridge must stay where the user put it"
+
+    # ---- b30 expectations -------------------------------------------------
+    p = cases["tall_corner"]
+    assert len(p["runs"]) == 2, "tall corner unit + counter must survive"
+    assert any(r.get("tall") for r in p["runs"]), "tall flag must survive"
+    p = cases["tall_base_separate"]
+    assert len(p["runs"]) == 2, "tall + base touching must stay separate"
+    p = cases["base_dragged_onto_tall"]
+    assert len(p["runs"]) == 2, "overlapping base must be trimmed, not merged"
+    tall = next(r for r in p["runs"] if r.get("tall"))
+    base = next(r for r in p["runs"] if not r.get("tall"))
+    assert base["a"] >= tall["b"] - 1e-9, \
+        f"base run must clear the tall unit (a={base['a']})"
+    assert abs(tall["a"] - 0.02) < 1e-6 and abs(tall["b"] - 0.62) < 1e-6, \
+        "the tall unit itself must not move"
+    p = cases["fridge_swallow"]
+    assert len(p["runs"]) == 2, "freestanding fridge must not be swallowed"
+    fr = next(r for r in p["runs"] if r.get("fridge"))
+    assert abs(fr["a"] - 1.4) < 1e-6 and abs(fr["b"] - 2.2) < 1e-6, \
+        f"fridge must stay put ({fr['a']},{fr['b']})"
+    plain = next(r for r in p["runs"] if not r.get("fridge"))
+    assert plain["b"] <= fr["a"] + 1e-9, "counter must be trimmed to touch"
+    p = cases["island_attached_seating"]
+    assert p["island"] is not None, "attached island must survive"
+    assert p["island"]["seating"] == "south", \
+        f"seating must flip away from the run ({p['island']['seating']})"
 
     # ---- idempotence: a second normalize must be a silent no-op ---------
     for name, plan in cases.items():

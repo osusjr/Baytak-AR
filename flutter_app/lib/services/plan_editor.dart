@@ -112,6 +112,7 @@ class PlanEditor {
             fridge: r.fridge,
             uppers: r.uppers,
             auto: r.auto,
+            tall: r.tall,
             origA: r.origA,
             origB: r.origB)
     ];
@@ -205,6 +206,7 @@ class PlanEditor {
                     : null,
         uppers: run.uppers,
         auto: run.auto,
+        tall: run.tall,
       );
       final i = plan.runs.indexOf(run);
       plan.runs[i] = moved;
@@ -249,8 +251,10 @@ class PlanEditor {
       if (run.sinkAt != null) run.sinkAt!,
       if (run.rangeAt != null) run.rangeAt!,
     ];
+    // tall pantry columns may shrink to a single 0.6 m unit (b30)
+    final minL = run.tall ? PlanNormalizer.tallMin : PlanNormalizer.minRun;
     if (startEnd) {
-      var maxA = hi - PlanNormalizer.minRun;
+      var maxA = hi - minL;
       for (final p in needs) {
         maxA = math.min(maxA, p - edgeMargin);
       }
@@ -258,17 +262,17 @@ class PlanEditor {
       // a fridge-only run has no room to give: clamp bounds can invert
       if (maxA < 0.02) return false;
       lo = v.clamp(0.02, maxA).toDouble();
-      if (hi - lo < PlanNormalizer.minRun - 1e-9) return false;
+      if (hi - lo < minL - 1e-9) return false;
       run.a = lo;
     } else {
-      var minB = lo + PlanNormalizer.minRun;
+      var minB = lo + minL;
       for (final p in needs) {
         minB = math.max(minB, p + edgeMargin);
       }
       if (run.fridge == 'end') minB = math.max(minB, run.b);
       if (minB > m - 0.02) return false;
       hi = v.clamp(minB, m - 0.02).toDouble();
-      if (hi - lo < PlanNormalizer.minRun - 1e-9) return false;
+      if (hi - lo < minL - 1e-9) return false;
       run.b = hi;
     }
     // a deliberate resize sets a new baseline (otherwise the regrow pass
@@ -281,6 +285,101 @@ class PlanEditor {
     }
     revision++;
     return true;
+  }
+
+  /// Plan rect of a hypothetical run [a,b] on [wall] - mirror of the
+  /// normalizer's geometry, for addRun's non-mutating pre-check.
+  (double, double, double, double) _spanRect(
+      Wall wall, double a, double b, double depth) {
+    final w = plan.widthM, d = plan.depthM;
+    return switch (wall) {
+      Wall.north => (a, 0.0, b, depth),
+      Wall.south => (a, d - depth, b, d),
+      Wall.west => (0.0, a, depth, b),
+      Wall.east => (w - depth, a, w, b),
+    };
+  }
+
+  static bool _rectsHit((double, double, double, double) p,
+          (double, double, double, double) q, double eps) =>
+      p.$1 < q.$3 - eps &&
+      q.$1 < p.$3 - eps &&
+      p.$2 < q.$4 - eps &&
+      q.$2 < p.$4 - eps;
+
+  /// b30: add a brand-new cabinet run - base counters or a TALL pantry
+  /// column (floor to the top of the uppers) - at the corner-most free
+  /// spot of the fullest wall with room; the user then drags it wherever
+  /// they want. Spots are PRE-CHECKED against every other run and the
+  /// island (no mutate-and-rollback: existing RunPlan references, which
+  /// the UI holds for selection, must stay valid). Returns false when no
+  /// wall has space.
+  bool addRun({bool tall = false}) {
+    final len = tall ? 0.60 : newRunLen;
+    final walls = [Wall.north, Wall.west, Wall.east, Wall.south];
+    double content(Wall w) => plan.runs
+        .where((r) => r.wall == w)
+        .fold(0.0, (t, r) => t + r.length);
+    // fullest wall first: an added unit belongs WITH the kitchen, not on
+    // a random empty wall across the room
+    walls.sort((x, y) => content(y).compareTo(content(x)));
+
+    bool spotClear(Wall wall, double a, double b) {
+      final cand = _spanRect(wall, a, b, PlanNormalizer.counterD);
+      for (final r in plan.runs) {
+        if (r.wall == wall) continue; // same-wall handled by the gap scan
+        final depth =
+            r.fridge != null ? PlanNormalizer.fridgeD : PlanNormalizer.counterD;
+        // keep clear of the run itself AND the corner clearance the
+        // normalizer would enforce (fridge slots claim extra room)
+        final margin = r.fridge != null ? 0.20 : 0.03;
+        final rect = _spanRect(r.wall, r.a - margin, r.b + margin, depth);
+        if (_rectsHit(cand, rect, 0.01)) return false;
+      }
+      final isl = plan.island;
+      if (isl != null &&
+          _rectsHit(cand,
+              (isl.x0 - 0.1, isl.z0 - 0.1, isl.x0 + isl.w + 0.1,
+                  isl.z0 + isl.d + 0.1),
+              0.01)) {
+        return false;
+      }
+      return true;
+    }
+
+    for (final wall in walls) {
+      final m = _wallLen(wall);
+      if (m < len + 0.16) continue;
+      final spans = plan.runs
+          .where((r) => r.wall == wall)
+          .map((r) => (r.a, r.b))
+          .toList()
+        ..sort((x, y) => x.$1.compareTo(y.$1));
+      var cursor = 0.02;
+      for (final (a, b) in [...spans, (m - 0.02, m - 0.02)]) {
+        final free = a - cursor;
+        if (free >= len + 0.12) {
+          final start = cursor <= 0.03 ? 0.02 : cursor + 0.06;
+          if (spotClear(wall, start, start + len)) {
+            final run = RunPlan(
+                wall: wall,
+                a: start,
+                b: start + len,
+                uppers: !tall,
+                tall: tall);
+            plan.runs.add(run);
+            normalizePlan(plan);
+            if (plan.runs.contains(run)) {
+              revision++;
+              return true;
+            }
+            plan.runs.remove(run); // paranoia - precheck should prevent
+          }
+        }
+        cursor = math.max(cursor, b);
+      }
+    }
+    return false;
   }
 
   /// Remove a whole run (long-press action). The fridge/sink/oven on it
@@ -347,10 +446,11 @@ class PlanEditor {
     if (u < -0.3 || u > m + 0.3) return false;
 
     var target = _runAt(wall, u);
+    if (target != null && target.tall) return false; // pantry hosts nothing
     if (target == null) {
       // extend a nearby run on the same wall toward the drop point
       for (final r in plan.runs) {
-        if (r.wall != wall) continue;
+        if (r.wall != wall || r.tall) continue;
         if (u < r.a && r.a - u <= extendReach) {
           r.a = (u - edgeMargin - 0.05).clamp(0.02, r.a).toDouble();
           target = r;
@@ -405,7 +505,7 @@ class PlanEditor {
     clearOld();
     final target = _runAt(wall, u, 0.2);
     if (target != null) {
-      if (target.length < minRunAfterFridge) {
+      if (target.length < minRunAfterFridge || target.tall) {
         restoreOld();
         return false;
       }
@@ -429,6 +529,7 @@ class PlanEditor {
             b: oldB,
             uppers: target.uppers,
             auto: target.auto,
+            tall: target.tall,
           );
           target.b = u + fridgeSpan / 2;
           target.fridge = 'end';
@@ -467,7 +568,7 @@ class PlanEditor {
     for (final r in plan.runs) {
       if (r.wall != wall) continue;
       if (a < r.b + 0.06 && r.a < b + 0.06) {
-        if (r.length >= minRunAfterFridge) {
+        if (r.length >= minRunAfterFridge && !r.tall) {
           // close enough to cabinets - snap onto their nearest end
           r.fridge = (u - r.a).abs() < (r.b - u).abs() ? 'start' : 'end';
           _reclampAfterFridge(r);
@@ -496,6 +597,7 @@ class PlanEditor {
   /// same run. Returns false when [target] cannot host the appliance.
   bool moveAppliance(ApplianceKind kind, RunPlan target, double u) {
     assert(kind != ApplianceKind.fridge, 'use place/moveFridge');
+    if (target.tall) return false; // no worktop - nothing can sit on it
     final (lo, hi) = usableSpan(target);
     if (hi - lo < 0.05) return false; // run too short (or fully fridge)
 
@@ -557,6 +659,13 @@ class PlanEditor {
   /// Push sink/range out of the fridge's slot, keeping their separation.
   void _reclampAfterFridge(RunPlan target) {
     final (lo, hi) = usableSpan(target);
+    if (hi <= lo) {
+      // the fridge ate the whole worktop - nothing can stay (guards the
+      // inverted-clamp crash the b30 fuzz found on ~1.5 m runs)
+      target.sinkAt = null;
+      target.rangeAt = null;
+      return;
+    }
     double? reclamp(double? v) {
       if (v == null) return null;
       return v.clamp(lo, hi).toDouble();
