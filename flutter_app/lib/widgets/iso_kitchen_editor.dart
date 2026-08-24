@@ -1213,14 +1213,32 @@ class _OverlayPainter extends CustomPainter {
       tp.paint(canvas, c - Offset(tp.width / 2, tp.height / 2));
     }
 
-    // ghost + landing label for run/island drags
-    if ((s._mode == _DragMode.run || s._mode == _DragMode.island) &&
+    // ghost + landing label for run/island/resize drags
+    if ((s._mode == _DragMode.run ||
+            s._mode == _DragMode.island ||
+            s._mode == _DragMode.handle) &&
         s._finger != null) {
       final tint = s._targetOk
           ? Baytak.brass.withValues(alpha: 0.45)
           : Colors.redAccent.withValues(alpha: 0.45);
       Rect footprint;
-      if (s._mode == _DragMode.run && s._dragRun != null) {
+      if (s._mode == _DragMode.handle && s._dragRun != null) {
+        // b34: live resize preview - the run's footprint with the
+        // dragged end following the finger (min length enforced)
+        final t = s._wallTarget;
+        final r = s._dragRun!;
+        if (t == null) return;
+        final minL = r.tall ? 0.55 : 0.9;
+        var a = r.a, b = r.b;
+        if (s._handleStart) {
+          a = math.min(t.$2, b - minL);
+        } else {
+          b = math.max(t.$2, a + minL);
+        }
+        final f = _RunFrame(r.wall, s.widget.plan.widthM, s.widget.plan.depthM);
+        final box = f.box(a, b, 0, 0.9, 0, 0.65, Colors.white);
+        footprint = Rect.fromLTRB(box.x0, box.z0, box.x1, box.z1);
+      } else if (s._mode == _DragMode.run && s._dragRun != null) {
         final t = s._wallTarget;
         final r = s._dragRun!;
         if (t == null) return;
@@ -1255,7 +1273,15 @@ class _OverlayPainter extends CustomPainter {
       // label (b32: IKEA-style live measurements - gaps to the nearest
       // neighbour/wall on each side update every drag tick)
       String text;
-      if (s._mode == _DragMode.run) {
+      if (s._mode == _DragMode.handle && s._dragRun != null) {
+        final t = s._wallTarget!;
+        final r = s._dragRun!;
+        final minL = r.tall ? 0.55 : 0.9;
+        final len = s._handleStart
+            ? math.max(minL, r.b - t.$2)
+            : math.max(minL, t.$2 - r.a);
+        text = '${len.toStringAsFixed(2)} m';
+      } else if (s._mode == _DragMode.run) {
         final t = s._wallTarget!;
         final r = s._dragRun!;
         final len = r.length;

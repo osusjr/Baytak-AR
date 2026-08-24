@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 33).
+(internal build counter in lib/theme.dart, currently 34).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -193,6 +193,13 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   moveRun/resizeRun/place may silently delete another non-auto run
   (merge-absorption counts as joined; a moving freestanding fridge's
   source is exempt) - "cabinets adjust" = trim-and-regrow only.
+- b34 resize fixes: growing a run's START end into its left neighbour
+  used to MERGE-absorb the resized run and fail the survival check ->
+  full rollback + error haptic (direction-dependent "resize is bugged").
+  resizeRun now counts merge-absorption as a successful join (same rule
+  as moveRun). Handle drags also gained a LIVE overlay ghost + length
+  label ("1.85 m") - before, nothing moved until release, so clamped or
+  refused resizes read as dead handles.
 - b33 add-missing-appliances: PlanEditor.addAppliance(kind) - the AI
   sometimes misses the fridge/oven on a blueprint and chips only existed
   for present appliances. Spots are tried through place() (longest

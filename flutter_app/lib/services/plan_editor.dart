@@ -439,8 +439,17 @@ class PlanEditor {
     // would immediately undo the user's shrink)
     run.rebaseOrig();
     normalizePlan(plan);
-    if (!plan.runs.contains(run) ||
-        !_othersSurvived(before, moved: run)) {
+    // b34: growing into a same-kind neighbour MERGES - when the resized
+    // run is the absorbed one (growing the START end into the left
+    // neighbour), that is a successful join, not a failure. Rollback
+    // only when the resized span truly vanished or another run was
+    // deleted.
+    final survived = plan.runs.contains(run) ||
+        plan.runs.any((q) =>
+            q.wall == run.wall &&
+            q.a <= lo + 0.05 &&
+            q.b >= hi - 0.05);
+    if (!survived || !_othersSurvived(before, moved: run)) {
       _restore(saved);
       return false;
     }
