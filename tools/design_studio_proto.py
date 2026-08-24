@@ -398,6 +398,22 @@ def worktop_span(r, ca, cb, runs, w, d):
 FRIDGE_ONLY_LEN = 0.80
 
 
+def door_bays(a, b):
+    """b32 IKEA-style module layout: uniform 0.60 m doors from [a], the
+    remainder as a narrower end bay - a door when >= 0.30 m, else a BLANK
+    FILLER strip (carcass face, no door), like the filler pieces a real
+    planner inserts. Returns [(bay_a, bay_b, has_door), ...]."""
+    L = b - a
+    n = int(L // 0.60)
+    rem = L - n * 0.60
+    if n == 0:
+        return [(a, b, True)]
+    bays = [(a + k * 0.60, a + (k + 1) * 0.60, True) for k in range(n)]
+    if rem > 0.02:
+        bays.append((b - rem, b, rem >= 0.30))
+    return bays
+
+
 # --- run builder: mirror of Dart _buildRun + design hooks ------------------
 def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
               draw_windows=True, runs=(), room_w=0.0, room_d=0.0):
@@ -426,11 +442,11 @@ def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
     f.box(s, wa, wb, BH, CTOP, 0.0, CD, "basalt")
     f.box(s, a, b, CTOP, 1.46, 0.0, 0.02, "splash")
 
-    n = max(2, round((b - a) / 0.60))
-    bw = (b - a) / n
-    for k in range(n):
-        ba, bb = a + k * bw + 0.009, a + (k + 1) * bw - 0.009
+    for ba0, bb0, has_door in door_bays(a, b):
+        ba, bb = ba0 + 0.009, bb0 - 0.009
         c = (ba + bb) / 2
+        if not has_door:
+            continue  # filler strip - carcass face shows
         if r.get("rangeAt") is not None and abs(c - r["rangeAt"]) < 0.42:
             continue
         door_front(f, s, ba, bb, TH + 0.008, BH - 0.008, BD, BD + 0.017,
@@ -486,10 +502,10 @@ def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
             spans = nxt
         for sp in spans:
             f.box(s, sp[0], sp[1], UY0, UY1, 0.0, UD, "upper")
-            nd = max(1, round((sp[1] - sp[0]) / 0.55))
-            dw = (sp[1] - sp[0]) / nd
-            for k in range(nd):
-                ba, bb = sp[0] + k * dw + 0.008, sp[0] + (k + 1) * dw - 0.008
+            for ba0, bb0, has_door in door_bays(sp[0], sp[1]):
+                if not has_door:
+                    continue
+                ba, bb = ba0 + 0.008, bb0 - 0.008
                 door_front(f, s, ba, bb, UY0 + 0.008, UY1 - 0.008,
                            UD, UD + 0.015, "upper_door", door_style)
                 upper_handle(f, s, (ba + bb) / 2, handle_style)

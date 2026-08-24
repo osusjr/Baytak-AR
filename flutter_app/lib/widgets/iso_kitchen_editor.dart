@@ -236,11 +236,10 @@ List<_Element> _buildElements(LayoutPlan plan, KitchenDesign design) {
     if (b - a >= 0.7) {
       boxes.add(f.box(a, b, 0, 0.10, 0.02, 0.57, _shade(lower, 0.5)));
       boxes.add(f.box(a, b, 0.10, 0.86, 0, 0.62, lower));
-      // door bays as slightly proud fronts
-      final n = math.max(2, ((b - a) / 0.60).round());
-      final bw = (b - a) / n;
-      for (var i = 0; i < n; i++) {
-        final ba = a + i * bw + 0.012, bb = a + (i + 1) * bw - 0.012;
+      // door bays as slightly proud fronts (b32: uniform IKEA modules)
+      for (final (ba0, bb0, hasDoor) in doorBays(a, b)) {
+        if (!hasDoor) continue;
+        final ba = ba0 + 0.012, bb = bb0 - 0.012;
         if (r.rangeAt != null && ((ba + bb) / 2 - r.rangeAt!).abs() < 0.42) {
           continue;
         }
@@ -825,36 +824,69 @@ class _IsoKitchenEditorState extends State<IsoKitchenEditor> {
                     fontSize: 11, color: Baytak.ink.withValues(alpha: 0.55)),
               ),
             ),
-            // b30: add cabinets at will - base counters or a tall pantry
-            PopupMenuButton<bool>(
-              tooltip: 'Add cabinets',
+            // b30: add cabinets at will; b33: add MISSING appliances too
+            // (the AI sometimes misses the fridge/oven on a blueprint)
+            PopupMenuButton<String>(
+              tooltip: 'Add cabinets or appliances',
               icon: const Icon(Icons.add_box_outlined, size: 19),
-              onSelected: (tall) {
+              onSelected: (what) {
                 ed.checkpoint();
-                if (ed.addRun(tall: tall)) {
+                final ok = switch (what) {
+                  'base' => ed.addRun(),
+                  'tall' => ed.addRun(tall: true),
+                  'sink' => ed.addAppliance(ApplianceKind.sink),
+                  'oven' => ed.addAppliance(ApplianceKind.range),
+                  _ => ed.addAppliance(ApplianceKind.fridge),
+                };
+                if (ok) {
                   setState(() => _selected = null);
-                  widget.onEdited(tall ? 'add_tall' : 'add_run');
+                  widget.onEdited('add_$what');
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                       duration: const Duration(seconds: 3),
-                      content: Text(tall
-                          ? 'Tall cabinet added - hold it to drag it '
-                              'anywhere, drag its end dots to widen it'
-                          : 'Cabinets added - hold them to drag them '
-                              'anywhere')));
+                      content: Text(switch (what) {
+                        'base' => 'Cabinets added - hold them to drag '
+                            'them anywhere',
+                        'tall' => 'Tall cabinet added - hold it to drag '
+                            'it anywhere, drag its end dots to widen it',
+                        _ => 'Added - drag the '
+                            '${what == 'sink' ? 'S' : what == 'oven' ? 'O' : 'F'}'
+                            ' chip to put it where you want',
+                      })));
                 } else {
                   ed.undoDiscardLast();
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content:
-                          Text('No wall has room - remove something first')));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(what == 'base' || what == 'tall'
+                          ? 'No wall has room - remove something first'
+                          : 'Already in the kitchen, or no room for it')));
                 }
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                    value: false, child: Text('Base cabinets (1.5 m)')),
-                PopupMenuItem(
-                    value: true,
-                    child: Text('Tall cabinet - floor to uppers (0.6 m)')),
-              ],
+              itemBuilder: (_) {
+                final plan = widget.plan;
+                bool has(ApplianceKind k) => switch (k) {
+                      ApplianceKind.sink =>
+                        plan.runs.any((r) => r.sinkAt != null),
+                      ApplianceKind.range =>
+                        plan.runs.any((r) => r.rangeAt != null),
+                      ApplianceKind.fridge =>
+                        plan.runs.any((r) => r.fridge != null),
+                    };
+                return [
+                  const PopupMenuItem(
+                      value: 'base', child: Text('Base cabinets (1.5 m)')),
+                  const PopupMenuItem(
+                      value: 'tall',
+                      child: Text('Tall cabinet - floor to uppers (0.6 m)')),
+                  if (!has(ApplianceKind.sink))
+                    const PopupMenuItem(
+                        value: 'sink', child: Text('Sink (S)')),
+                  if (!has(ApplianceKind.range))
+                    const PopupMenuItem(
+                        value: 'oven', child: Text('Oven / cooker (O)')),
+                  if (!has(ApplianceKind.fridge))
+                    const PopupMenuItem(
+                        value: 'fridge', child: Text('Fridge (F)')),
+                ];
+              },
             ),
             IconButton(
               tooltip: 'Rotate view',
@@ -1220,12 +1252,27 @@ class _OverlayPainter extends CustomPainter {
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2);
 
-      // label
+      // label (b32: IKEA-style live measurements - gaps to the nearest
+      // neighbour/wall on each side update every drag tick)
       String text;
       if (s._mode == _DragMode.run) {
         final t = s._wallTarget!;
-        text =
-            '${s._dragRun!.length.toStringAsFixed(2)} m on the ${t.$1.name} wall';
+        final r = s._dragRun!;
+        final len = r.length;
+        final m = s._wallLen(t.$1);
+        final ga = (t.$2 - len / 2)
+            .clamp(0.02, math.max(0.02, m - len - 0.02))
+            .toDouble();
+        var leftAt = 0.0, rightAt = m;
+        for (final q in s.widget.plan.runs) {
+          if (identical(q, r) || q.wall != t.$1) continue;
+          if (q.b <= ga + 0.01 && q.b > leftAt) leftAt = q.b;
+          if (q.a >= ga + len - 0.01 && q.a < rightAt) rightAt = q.a;
+        }
+        final lg = math.max(0.0, ga - leftAt);
+        final rg = math.max(0.0, rightAt - (ga + len));
+        text = '${lg.toStringAsFixed(2)} ◀ ${len.toStringAsFixed(2)} m '
+            '▶ ${rg.toStringAsFixed(2)}';
       } else {
         final t = s._floorTarget!;
         text = 'island at ${t.$1.toStringAsFixed(2)} × '
