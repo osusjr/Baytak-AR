@@ -246,7 +246,9 @@ List<_Element> _buildElements(LayoutPlan plan, KitchenDesign design) {
         }
         boxes.add(f.box(ba, bb, 0.115, 0.85, 0.62, 0.638, lowerDoor));
       }
-      boxes.add(f.box(a - 0.02, b + 0.02, 0.86, 0.90, 0, 0.655, worktop));
+      // b31: corner-aware span - L-corner worktops join flush
+      final (wa, wb) = worktopSpan(r, a, b, plan);
+      boxes.add(f.box(wa, wb, 0.86, 0.90, 0, 0.655, worktop));
       if (r.sinkAt != null) {
         boxes.add(f.box(r.sinkAt! - 0.34, r.sinkAt! + 0.34, 0.901, 0.905,
             0.09, 0.50, dark));
