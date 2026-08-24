@@ -543,6 +543,54 @@ class PlanEditor {
     return false;
   }
 
+  /// b33: adds a MISSING appliance - the AI sometimes misses the fridge
+  /// or oven on a blueprint, and the user could only move appliances
+  /// that already existed. Spots are tried through place(), which
+  /// enforces every collision/clearance/no-delete rule, so adding can
+  /// never mess up the cabinets. Returns false when the appliance is
+  /// already in the kitchen or genuinely nothing fits.
+  bool addAppliance(ApplianceKind kind) {
+    if (runWith(kind) != null) return false;
+    // existing counter runs first (longest usable span = best home)
+    final runs = [
+      for (final r in plan.runs)
+        if (!r.tall && !_isFridgeOnly(r)) r
+    ]..sort((x, y) => y.length.compareTo(x.length));
+    for (final r in runs) {
+      if (kind == ApplianceKind.fridge) {
+        for (final u in [r.b - 0.1, r.a + 0.1]) {
+          if (place(kind, r.wall, u)) return true;
+        }
+      } else {
+        final (lo, hi) = usableSpan(r);
+        if (hi - lo < 0.05) continue;
+        for (final t in const [0.5, 0.3, 0.7]) {
+          if (place(kind, r.wall, lo + (hi - lo) * t)) return true;
+        }
+      }
+    }
+    // bare-wall fallback: free-gap midpoints (a fridge parks
+    // freestanding; a sink/oven grows its own run there)
+    final need = kind == ApplianceKind.fridge ? 1.0 : 1.7;
+    for (final wall in Wall.values) {
+      final m = _wallLen(wall);
+      final spans = plan.runs
+          .where((r) => r.wall == wall)
+          .map((r) => (r.a, r.b))
+          .toList()
+        ..sort((x, y) => x.$1.compareTo(y.$1));
+      var cursor = 0.02;
+      for (final (a, b) in [...spans, (m - 0.02, m - 0.02)]) {
+        if (a - cursor >= need &&
+            place(kind, wall, (cursor + a) / 2)) {
+          return true;
+        }
+        cursor = math.max(cursor, b);
+      }
+    }
+    return false;
+  }
+
   /// Remove a whole run (long-press action). The fridge/sink/oven on it
   /// disappear with it - visible, deliberate, and undoable.
   bool removeRun(RunPlan run) {

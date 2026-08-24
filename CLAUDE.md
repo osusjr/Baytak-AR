@@ -3,7 +3,7 @@
 Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
 retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
 Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 32).
+(internal build counter in lib/theme.dart, currently 33).
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
@@ -193,6 +193,13 @@ Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
   moveRun/resizeRun/place may silently delete another non-auto run
   (merge-absorption counts as joined; a moving freestanding fridge's
   source is exempt) - "cabinets adjust" = trim-and-regrow only.
+- b33 add-missing-appliances: PlanEditor.addAppliance(kind) - the AI
+  sometimes misses the fridge/oven on a blueprint and chips only existed
+  for present appliances. Spots are tried through place() (longest
+  counter runs first, then bare-wall free-gap midpoints), so every
+  collision/clearance/no-delete rule applies - adding can never disturb
+  the cabinets. Iso editor "+" menu lists Sink/Oven/Fridge entries only
+  while missing; once added, the chip drags as usual.
 - b32 IKEA-planner behaviours (researched from IKEA's own quick guide):
   (1) MAGNETIC SNAP in moveRun - released within 0.18 m of a neighbour
   edge/wall end/clearance boundary the run lands FLUSH (same-kind then

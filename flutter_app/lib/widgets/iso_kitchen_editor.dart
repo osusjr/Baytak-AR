@@ -824,36 +824,69 @@ class _IsoKitchenEditorState extends State<IsoKitchenEditor> {
                     fontSize: 11, color: Baytak.ink.withValues(alpha: 0.55)),
               ),
             ),
-            // b30: add cabinets at will - base counters or a tall pantry
-            PopupMenuButton<bool>(
-              tooltip: 'Add cabinets',
+            // b30: add cabinets at will; b33: add MISSING appliances too
+            // (the AI sometimes misses the fridge/oven on a blueprint)
+            PopupMenuButton<String>(
+              tooltip: 'Add cabinets or appliances',
               icon: const Icon(Icons.add_box_outlined, size: 19),
-              onSelected: (tall) {
+              onSelected: (what) {
                 ed.checkpoint();
-                if (ed.addRun(tall: tall)) {
+                final ok = switch (what) {
+                  'base' => ed.addRun(),
+                  'tall' => ed.addRun(tall: true),
+                  'sink' => ed.addAppliance(ApplianceKind.sink),
+                  'oven' => ed.addAppliance(ApplianceKind.range),
+                  _ => ed.addAppliance(ApplianceKind.fridge),
+                };
+                if (ok) {
                   setState(() => _selected = null);
-                  widget.onEdited(tall ? 'add_tall' : 'add_run');
+                  widget.onEdited('add_$what');
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                       duration: const Duration(seconds: 3),
-                      content: Text(tall
-                          ? 'Tall cabinet added - hold it to drag it '
-                              'anywhere, drag its end dots to widen it'
-                          : 'Cabinets added - hold them to drag them '
-                              'anywhere')));
+                      content: Text(switch (what) {
+                        'base' => 'Cabinets added - hold them to drag '
+                            'them anywhere',
+                        'tall' => 'Tall cabinet added - hold it to drag '
+                            'it anywhere, drag its end dots to widen it',
+                        _ => 'Added - drag the '
+                            '${what == 'sink' ? 'S' : what == 'oven' ? 'O' : 'F'}'
+                            ' chip to put it where you want',
+                      })));
                 } else {
                   ed.undoDiscardLast();
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content:
-                          Text('No wall has room - remove something first')));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(what == 'base' || what == 'tall'
+                          ? 'No wall has room - remove something first'
+                          : 'Already in the kitchen, or no room for it')));
                 }
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                    value: false, child: Text('Base cabinets (1.5 m)')),
-                PopupMenuItem(
-                    value: true,
-                    child: Text('Tall cabinet - floor to uppers (0.6 m)')),
-              ],
+              itemBuilder: (_) {
+                final plan = widget.plan;
+                bool has(ApplianceKind k) => switch (k) {
+                      ApplianceKind.sink =>
+                        plan.runs.any((r) => r.sinkAt != null),
+                      ApplianceKind.range =>
+                        plan.runs.any((r) => r.rangeAt != null),
+                      ApplianceKind.fridge =>
+                        plan.runs.any((r) => r.fridge != null),
+                    };
+                return [
+                  const PopupMenuItem(
+                      value: 'base', child: Text('Base cabinets (1.5 m)')),
+                  const PopupMenuItem(
+                      value: 'tall',
+                      child: Text('Tall cabinet - floor to uppers (0.6 m)')),
+                  if (!has(ApplianceKind.sink))
+                    const PopupMenuItem(
+                        value: 'sink', child: Text('Sink (S)')),
+                  if (!has(ApplianceKind.range))
+                    const PopupMenuItem(
+                        value: 'oven', child: Text('Oven / cooker (O)')),
+                  if (!has(ApplianceKind.fridge))
+                    const PopupMenuItem(
+                        value: 'fridge', child: Text('Fridge (F)')),
+                ];
+              },
             ),
             IconButton(
               tooltip: 'Rotate view',

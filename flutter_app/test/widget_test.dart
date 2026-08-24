@@ -1114,6 +1114,60 @@ void main() {
     });
   });
 
+  group('User-added appliances (b33)', () {
+    test('a missed fridge can be added without touching the cabinets', () {
+      // AI plan with sink+oven but NO fridge (the reported miss)
+      final north = RunPlan(
+          wall: Wall.north,
+          a: 0.1,
+          b: 3.5,
+          sinkAt: 0.9,
+          rangeAt: 2.6,
+          uppers: true);
+      final plan = LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [north]);
+      final editor = PlanEditor(plan);
+      expect(editor.addAppliance(ApplianceKind.fridge), isTrue);
+      expect(editor.runWith(ApplianceKind.fridge), isNotNull);
+      // the original cabinets survived intact
+      expect(plan.runs.contains(north), isTrue);
+      expect(north.sinkAt, isNotNull);
+      expect(north.rangeAt, isNotNull);
+    });
+
+    test('a missed oven lands on an existing counter', () {
+      final north = RunPlan(
+          wall: Wall.north, a: 0.1, b: 3.5, sinkAt: 0.9, uppers: true);
+      final plan = LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [north]);
+      final editor = PlanEditor(plan);
+      expect(editor.addAppliance(ApplianceKind.range), isTrue);
+      expect(north.rangeAt, isNotNull);
+      // proper separation from the sink
+      expect((north.rangeAt! - north.sinkAt!).abs(),
+          greaterThanOrEqualTo(PlanEditor.minSeparation - 1e-6));
+    });
+
+    test('adding an appliance that exists is refused', () {
+      final north = RunPlan(
+          wall: Wall.north, a: 0.1, b: 3.5, sinkAt: 0.9, uppers: true);
+      final plan = LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [north]);
+      final editor = PlanEditor(plan);
+      expect(editor.addAppliance(ApplianceKind.sink), isFalse);
+    });
+
+    test('all three can be added to a bare kitchen', () {
+      final plan = LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [
+        RunPlan(wall: Wall.north, a: 0.5, b: 2.2, uppers: true),
+      ]);
+      final editor = PlanEditor(plan);
+      expect(editor.addAppliance(ApplianceKind.sink), isTrue);
+      expect(editor.addAppliance(ApplianceKind.range), isTrue);
+      expect(editor.addAppliance(ApplianceKind.fridge), isTrue);
+      expect(editor.runWith(ApplianceKind.sink), isNotNull);
+      expect(editor.runWith(ApplianceKind.range), isNotNull);
+      expect(editor.runWith(ApplianceKind.fridge), isNotNull);
+    });
+  });
+
   group('No-overlap invariant (b30 fuzz)', () {
     // real built geometry: the counter part is 0.655 deep and only the
     // 0.8 m fridge SLOT is 0.75 deep - modelling the whole run at 0.75
