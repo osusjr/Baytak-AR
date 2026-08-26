@@ -7,7 +7,7 @@ const kVersionLabel = 'PROTOTYPE v1';
 /// Internal build counter - bump EVERY change round. The RENDER OK strips
 /// show it so stale builds on the test phone are still detectable now that
 /// the marketing label stays fixed.
-const kBuildNumber = 33;
+const kBuildNumber = 34;
 
 /// Diagnostic stamp for the per-screen "RENDER OK" strips.
 const kBuildStamp = '$kVersionLabel (b$kBuildNumber)';

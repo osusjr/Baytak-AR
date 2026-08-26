@@ -1114,6 +1114,37 @@ void main() {
     });
   });
 
+  group('Resize fixes (b34)', () {
+    test('growing the START end into the left neighbour joins them - '
+        'no more snap-back', () {
+      final left = RunPlan(
+          wall: Wall.north, a: 0.5, b: 1.6, sinkAt: 1.0, uppers: true);
+      final right = RunPlan(wall: Wall.north, a: 2.2, b: 3.4, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [left, right]);
+      final editor = PlanEditor(plan);
+      // drag the right run's start handle onto the left run's end
+      expect(editor.resizeRun(right, startEnd: true, v: 1.55), isTrue);
+      expect(plan.runs, hasLength(1)); // merged into one counter
+      expect(plan.runs.single.a, closeTo(0.5, 1e-6));
+      expect(plan.runs.single.b, closeTo(3.4, 1e-6));
+      expect(plan.runs.single.sinkAt, isNotNull); // sink survived the join
+    });
+
+    test('growing the END side into the right neighbour still joins', () {
+      final left = RunPlan(
+          wall: Wall.north, a: 0.5, b: 1.6, sinkAt: 1.0, uppers: true);
+      final right = RunPlan(wall: Wall.north, a: 2.2, b: 3.4, uppers: true);
+      final plan =
+          LayoutPlan(widthM: 4.2, depthM: 3.4, runs: [left, right]);
+      final editor = PlanEditor(plan);
+      expect(editor.resizeRun(left, startEnd: false, v: 2.25), isTrue);
+      expect(plan.runs, hasLength(1));
+      expect(plan.runs.single.a, closeTo(0.5, 1e-6));
+      expect(plan.runs.single.b, closeTo(3.4, 1e-6));
+    });
+  });
+
   group('User-added appliances (b33)', () {
     test('a missed fridge can be added without touching the cabinets', () {
       // AI plan with sink+oven but NO fridge (the reported miss)
