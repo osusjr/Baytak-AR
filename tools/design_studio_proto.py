@@ -140,7 +140,9 @@ HARDWARE = {
     "black": ("Matte black", 0xFF232326, ((0.06, 0.06, 0.07), 0.40, 0.60)),
 }
 
-HANDLE_STYLES = {"bar": "Bar pull", "knob": "Knob", "none": "Handleless"}
+HANDLE_STYLES = {"bar": "Bar pull", "knob": "Knob",
+                 "push": "Push-to-open", "gola": "Hidden rail",
+                 "none": "Handleless"}
 DOOR_STYLES = {"slab": "Flat slab", "shaker": "Shaker frame"}
 
 
@@ -440,6 +442,11 @@ def build_run(s, f, r, windows, handle_style="bar", door_style="slab",
     else:
         wa, wb = a - 0.02, b + 0.02
     f.box(s, wa, wb, BH, CTOP, 0.0, CD, "basalt")
+    if handle_style == "gola":
+        # b35 hidden-handle rail: recessed dark grip profile under the
+        # worktop, across the whole counter front
+        f.box(s, a, b, BH - 0.045, BH - 0.003, BD - 0.012, BD + 0.008,
+              "black")
     f.box(s, a, b, CTOP, 1.46, 0.0, 0.02, "splash")
 
     for ba0, bb0, has_door in door_bays(a, b):

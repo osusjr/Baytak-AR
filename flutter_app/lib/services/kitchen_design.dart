@@ -114,6 +114,8 @@ const hardwareFinishes = <String, HardwareFinish>{
 const handleStyles = <String, String>{
   'bar': 'Bar pull',
   'knob': 'Knob',
+  'push': 'Push-to-open', // b35: no visible handle, catch per door
+  'gola': 'Hidden rail', // b35: recessed aluminium grip profile
   'none': 'Handleless',
 };
 

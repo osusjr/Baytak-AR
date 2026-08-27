@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../data/catalog.dart';
 import '../screens/blueprint_screen.dart';
 import '../screens/design_studio_screen.dart';
-import '../screens/room_designer_screen.dart';
 import '../screens/saved_designs_screen.dart';
 import '../screens/scan_screen.dart';
 import '../screens/stores_screen.dart';
@@ -88,14 +87,9 @@ class ProfileTab extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const FavoritesScreen())),
           ),
 
-          _Section('BAYTAK STUDIO'),
-          _Row(
-            icon: Icons.meeting_room_rounded,
-            title: 'Room designer (AI)',
-            subtitle: 'Photo -> measured room -> fitting furniture in AR',
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const RoomDesignerScreen())),
-          ),
+          _Section('MATBAKHAK STUDIO'),
+          // b35 kitchens-only: the furniture room designer is retired
+          // (its catalogue picks were non-kitchen furniture)
           _Row(
             icon: Icons.architecture_rounded,
             title: 'Blueprint studio',
@@ -124,7 +118,7 @@ class ProfileTab extends StatelessWidget {
           ),
           _Row(
             icon: Icons.center_focus_strong_rounded,
-            title: 'Scan furniture',
+            title: 'Scan an object (3D)',
             subtitle: 'Guided photo orbit for 3D reconstruction',
             onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const ScanScreen())),
@@ -152,7 +146,7 @@ class ProfileTab extends StatelessWidget {
           ),
           _Row(
             icon: Icons.info_outline_rounded,
-            title: 'Baytak AR - demo build',
+            title: 'Matbakhak - demo build',
             subtitle: 'Prototype v1 (build $kBuildNumber) · cart and orders are stored on this '
                 'device',
           ),

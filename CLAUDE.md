@@ -1,9 +1,20 @@
-# Baytak AR (بيتك) - project briefing
+# Matbakhak (مطبخك) - project briefing
 
-Flutter AR furniture & kitchen visualizer. Demo pitch target: furniture
-retailers in Amman, Jordan (Abdin Kitchens, JWICO, Universal Kitchen,
-Home Centre, THE One). Investor-grade demo, branded "PROTOTYPE v1"
-(internal build counter in lib/theme.dart, currently 34).
+Flutter kitchen designer + AR visualizer (b35 pivot: KITCHENS ONLY,
+renamed from Baytak AR; one universal app for every kitchen shop, no
+per-shop catalogue). The shop workflow A-Z: dimensions -> plan -> AI
+design -> cabinet-level editing (drag/snap/resize/add, tall units,
+handle details incl. push-to-open + gola) -> photoreal render + AR ->
+PARTS: the cut-list engine (lib/services/cut_list.dart, prototype
+tools/cutlist_proto.py - keep in sync) breaks every cabinet into panels
+on standard 2440x1220 sheets (18mm MFC carcass, 3mm HDF backs, 18mm MDF
+shaker doors), nests them (shelf FFD, 4mm kerf), counts hardware, and
+prices from the rate card in lib/services/kitchen_materials.dart
+(JOD defaults, manufacture factor 1.7, +/-10% band - THE calibration
+surface per workshop). Branded "PROTOTYPE v1" (internal build counter
+in lib/theme.dart, currently 35). Old furniture categories stay in the
+Cat enum for JSON compat but are filtered out of the active catalogue;
+the furniture Room designer entry is retired.
 
 ## Layout
 - `flutter_app/` - the app (Flutter 3.44, Dart 3). Entry: lib/main.dart.
