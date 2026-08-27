@@ -200,7 +200,11 @@ const bundledCatalog = [
   shelfPetra,
 ];
 
-List<DemoModel> _active = bundledCatalog;
+/// b35 Matbakhak: the app is kitchens-only now - every other furniture
+/// category is filtered out of the active catalogue (the enum values stay
+/// for JSON compatibility with old carts/remote rows).
+List<DemoModel> _active =
+    [for (final m in bundledCatalog) if (m.isKitchen) m];
 
 /// Generated-on-device models (custom kitchens, room scenes) registered so
 /// cart/order lines referencing them resolve. Not persisted: after a

@@ -17,6 +17,7 @@ import '../services/plan_normalizer.dart';
 import '../services/saved_designs.dart';
 import '../theme.dart';
 import '../widgets/iso_kitchen_editor.dart';
+import 'bom_screen.dart';
 import 'design_chat_screen.dart';
 import 'photo_render_screen.dart';
 import 'product_details_screen.dart';
@@ -775,6 +776,18 @@ class _DesignStudioScreenState extends State<DesignStudioScreen> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          // b35: the factory step - cabinets -> panels -> sheets -> price
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.tonalIcon(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) =>
+                      BomScreen(plan: widget.plan, design: _design))),
+              icon: const Icon(Icons.carpenter_outlined, size: 18),
+              label: const Text('Parts, boards & price breakdown'),
+            ),
           ),
         ],
       ),

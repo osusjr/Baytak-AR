@@ -48,7 +48,7 @@ class BaytakArApp extends StatelessWidget {
     return AppScope(
       state: state,
       child: MaterialApp(
-        title: 'Baytak AR',
+        title: 'Matbakhak',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
         home: state.onboarded ? const RootShell() : const OnboardingScreen(),

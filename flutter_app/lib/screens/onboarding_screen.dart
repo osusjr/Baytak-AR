@@ -22,11 +22,11 @@ class OnboardingScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.baseline,
                 textBaseline: TextBaseline.alphabetic,
                 children: [
-                  Text('Baytak',
+                  Text('Matbakhak',
                       style:
                           Baytak.display(size: 24, weight: FontWeight.w700)),
                   const SizedBox(width: 8),
-                  Text('بيتك',
+                  Text('مطبخك',
                       style: text.titleSmall?.copyWith(
                           color: Baytak.olive, fontWeight: FontWeight.w700)),
                 ],

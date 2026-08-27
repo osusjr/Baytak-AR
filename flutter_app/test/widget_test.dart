@@ -12,6 +12,8 @@ import 'package:baytak_ar/services/analytics.dart';
 import 'package:baytak_ar/services/device_id.dart';
 import 'package:baytak_ar/services/kitchen_design.dart';
 import 'package:baytak_ar/services/kitchen_generator.dart';
+import 'package:baytak_ar/services/kitchen_materials.dart';
+import 'package:baytak_ar/services/cut_list.dart';
 import 'package:baytak_ar/services/design_chat.dart';
 import 'package:baytak_ar/services/photo_render.dart';
 import 'package:baytak_ar/services/plan_editor.dart';
@@ -33,7 +35,7 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     await tester.pumpWidget(BaytakArApp(state: AppState(prefs)));
     await tester.pump();
-    expect(find.text('Baytak'), findsOneWidget);
+    expect(find.text('Matbakhak'), findsOneWidget);
     expect(find.text(kVersionLabel), findsOneWidget);
   });
 
@@ -1111,6 +1113,94 @@ void main() {
       final editor = PlanEditor(plan);
       expect(editor.moveRun(run, Wall.north, 2.3), isTrue);
       expect(run.a, closeTo(2.3 - 0.75, 1e-6)); // exactly where dropped
+    });
+  });
+
+  group('Cut-list engine (b35)', () {
+    LayoutPlan demoUPlan() => LayoutPlan(
+          widthM: 4.2,
+          depthM: 3.4,
+          runs: [
+            RunPlan(
+                wall: Wall.north,
+                a: 0.82,
+                b: 4.15,
+                sinkAt: 1.71,
+                rangeAt: 3.17,
+                uppers: true),
+            RunPlan(
+                wall: Wall.west, a: 0.02, b: 3.06, fridge: 'start',
+                uppers: true),
+          ],
+          island: IslandPlan(x0: 1.2, z0: 1.5, w: 1.6, d: 0.9),
+        );
+
+    test('the demo kitchen breaks down to the proto-validated numbers', () {
+      final bom = buildBom(demoUPlan(), const KitchenDesign());
+      final counts = bom.cabinetCounts;
+      // FROZEN from tools/cutlist_proto.py on the same plan
+      expect((counts['base'] ?? 0) + (counts['sink base'] ?? 0), 8);
+      expect(counts['upper'], 9);
+      expect(counts['island base'], 3);
+      expect(bom.hardware['hinge'], 40); // 20 doors x 2
+      expect(bom.hardware['leg'], 44);
+      expect(bom.hardware['bracket'], 18);
+      expect(bom.hardware['handle'], 20);
+      expect(bom.worktopM, closeTo(7.27, 0.02));
+      expect(bom.notes.join(), contains('fridge'));
+      expect(bom.notes.join(), contains('cooker'));
+    });
+
+    test('nesting buys a plausible number of standard sheets', () {
+      final bom = buildBom(demoUPlan(), const KitchenDesign());
+      final est = priceBom(bom, const KitchenDesign());
+      expect(est.boards['mfc18'], 14); // frozen from the proto
+      expect(est.boards['hdf3'], 4);
+      expect(est.utilization['mfc18']!, greaterThan(0.5));
+      expect(est.utilization['mfc18']!, lessThan(0.95));
+      // total in the researched Amman mid-market band, +/-10% band wider
+      expect(est.totalJd, closeTo(1797, 25));
+      expect(est.lowJd, lessThan(est.totalJd));
+      expect(est.highJd, greaterThan(est.totalJd));
+    });
+
+    test('shaker doors switch door panels to MDF sheets', () {
+      final bom =
+          buildBom(demoUPlan(), const KitchenDesign(door: 'shaker'));
+      final est =
+          priceBom(bom, const KitchenDesign(door: 'shaker'));
+      expect(est.boards['mdf18'], greaterThan(0));
+    });
+
+    test('push-to-open and gola price differently from bar handles', () {
+      final bar = priceBom(buildBom(demoUPlan(), const KitchenDesign()),
+          const KitchenDesign());
+      final push = priceBom(
+          buildBom(demoUPlan(), const KitchenDesign(handle: 'push')),
+          const KitchenDesign(handle: 'push'));
+      final gola = priceBom(
+          buildBom(demoUPlan(), const KitchenDesign(handle: 'gola')),
+          const KitchenDesign(handle: 'gola'));
+      expect(push.totalJd, isNot(closeTo(bar.totalJd, 0.01)));
+      expect(gola.totalJd, greaterThan(push.totalJd));
+    });
+
+    test('tall pantry units contribute their stacked-door parts', () {
+      final plan = LayoutPlan(widthM: 3.6, depthM: 3.0, runs: [
+        RunPlan(wall: Wall.west, a: 0.02, b: 0.62, tall: true),
+      ]);
+      final bom = buildBom(plan, const KitchenDesign());
+      expect(bom.cabinetCounts['tall'], 1);
+      expect(bom.hardware['hinge'], 5); // 3 low + 2 high
+      expect(bom.parts.any((p) => p.name == 'door low'), isTrue);
+      expect(bom.worktopM, 0); // no worktop over a pantry
+    });
+
+    test('every part fits a standard sheet', () {
+      final bom = buildBom(demoUPlan(), const KitchenDesign());
+      for (final mat in sheetStock.keys) {
+        expect(() => nestSheets(bom.parts, mat), returnsNormally);
+      }
     });
   });
 

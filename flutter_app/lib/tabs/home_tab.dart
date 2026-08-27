@@ -15,7 +15,7 @@ class HomeTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     return DefaultTabController(
-      length: 1 + Cat.values.length,
+      length: 2, // Home + Kitchens (b35: kitchens-only)
       child: SafeArea(
         bottom: false,
         child: Column(
@@ -27,11 +27,11 @@ class HomeTab extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.baseline,
                 textBaseline: TextBaseline.alphabetic,
                 children: [
-                  Text('Baytak',
+                  Text('Matbakhak',
                       style:
                           Baytak.display(size: 26, weight: FontWeight.w700)),
                   const SizedBox(width: 8),
-                  Text('بيتك',
+                  Text('مطبخك',
                       style: text.titleSmall?.copyWith(
                           color: Baytak.olive, fontWeight: FontWeight.w700)),
                   const Spacer(),
@@ -44,14 +44,14 @@ class HomeTab extends StatelessWidget {
               tabAlignment: TabAlignment.start,
               tabs: [
                 const Tab(text: 'Home'),
-                for (final c in Cat.values) Tab(text: c.label),
+                const Tab(text: 'Kitchens'),
               ],
             ),
             Expanded(
               child: TabBarView(
                 children: [
                   const _MainCategoryPage(),
-                  for (final c in Cat.values) _CategoryPage(category: c),
+                  const _CategoryPage(category: Cat.kitchens),
                 ],
               ),
             ),

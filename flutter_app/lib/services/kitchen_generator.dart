@@ -745,6 +745,12 @@ void _buildRun(_Scene s, _Frame f, RunPlan r, List<WindowPlan> windows,
   f.box(s, a, b, _th, _bh, 0.0, _bd, 'walnut');
   final (wa, wb) = worktopSpan(r, a, b, plan);
   f.box(s, wa, wb, _bh, _ctop, 0.0, _cd, 'basalt');
+  if (handle == 'gola') {
+    // b35 hidden-handle rail: recessed dark grip profile under the
+    // worktop, across the whole counter front (proto build_run mirror)
+    f.box(s, a, b, _bh - 0.045, _bh - 0.003, _bd - 0.012, _bd + 0.008,
+        'black');
+  }
   f.box(s, a, b, _ctop, 1.46, 0.0, 0.02, 'splash');
 
   // b32 IKEA-style module bays (uniform 0.60 doors + filler), skipping
