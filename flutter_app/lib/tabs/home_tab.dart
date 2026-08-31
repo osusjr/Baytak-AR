@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/catalog.dart';
+import '../screens/new_kitchen_wizard.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/product_cards.dart';
@@ -74,6 +75,11 @@ class _MainCategoryPage extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 26),
       children: [
         const SizedBox(height: 14),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 22),
+          child: _WizardHeroCard(),
+        ),
+        const SizedBox(height: 14),
         SizedBox(
           height: kSpecialRailHeight,
           child: ListView.separated(
@@ -130,6 +136,72 @@ class _CategoryPage extends StatelessWidget {
         SectionTitle(category.label),
         _grid(items),
       ],
+    );
+  }
+}
+
+/// b36 - the shop's front door: straight into the guided wizard where the
+/// client watches their kitchen build itself from bare dimensions.
+class _WizardHeroCard extends StatelessWidget {
+  const _WizardHeroCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Material(
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
+      child: Ink(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Baytak.ink, Baytak.walnut],
+          ),
+        ),
+        child: InkWell(
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => const NewKitchenWizardScreen())),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('New kitchen',
+                          style: Baytak.display(
+                              size: 20,
+                              weight: FontWeight.w700,
+                              color: Colors.white)),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Slide your room size and watch the kitchen '
+                        'build itself - then restyle every finish.',
+                        style: text.bodySmall?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.85),
+                            height: 1.35),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: Baytak.brass.withValues(alpha: 0.9),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.auto_awesome,
+                      color: Colors.white, size: 22),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
