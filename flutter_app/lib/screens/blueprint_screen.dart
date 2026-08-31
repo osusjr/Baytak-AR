@@ -14,6 +14,7 @@ import '../services/scan_cache.dart';
 import '../theme.dart';
 import 'design_chat_screen.dart';
 import 'design_studio_screen.dart';
+import 'new_kitchen_wizard.dart';
 
 /// Blueprint studio v17: photo -> AI analysis (free NVIDIA-hosted vision
 /// models, zero setup in-app) -> LayoutPlan -> the Design studio, where
@@ -617,6 +618,16 @@ class _BlueprintScreenState extends State<BlueprintScreen> {
             'Design studio and 3D build run entirely on this phone.',
             style: text.bodySmall?.copyWith(
                 color: Baytak.ink.withValues(alpha: 0.65), height: 1.4),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const NewKitchenWizardScreen())),
+              icon: const Icon(Icons.auto_awesome, size: 18),
+              label: const Text('No drawing? Use the New kitchen wizard'),
+            ),
           ),
           const SizedBox(height: 12),
           Row(

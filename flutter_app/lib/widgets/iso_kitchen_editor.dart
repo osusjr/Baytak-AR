@@ -379,6 +379,173 @@ List<int> _depthOrder(List<_Element> els, IsoView v) {
 }
 
 // ---------------------------------------------------------------------------
+// shared box/quad drawing (scene painter + the b36 cinematic build)
+// ---------------------------------------------------------------------------
+Color _withAlpha(Color c, double a) => a >= 1.0 ? c : c.withValues(alpha: a);
+
+void _paintQuad(Canvas canvas, List<Offset> pts, Color fill, Paint stroke) {
+  final path = Path()..addPolygon(pts, true);
+  canvas.drawPath(path, Paint()..color = fill);
+  canvas.drawPath(path, stroke);
+}
+
+void _paintBox(Canvas canvas, IsoView v, _EBox b, Paint stroke,
+    {double alpha = 1.0, bool highlight = false}) {
+  final base = highlight ? Color.lerp(b.c, Baytak.brass, 0.25)! : b.c;
+  // three visible faces of an axis-aligned box under this projection:
+  // top, view-south, view-east. Compute via rotated corners.
+  final c000 = v.project(b.x0, b.y0, b.z0);
+  final c100 = v.project(b.x1, b.y0, b.z0);
+  final c010 = v.project(b.x0, b.y0, b.z1);
+  final c110 = v.project(b.x1, b.y0, b.z1);
+  final t000 = v.project(b.x0, b.y1, b.z0);
+  final t100 = v.project(b.x1, b.y1, b.z0);
+  final t010 = v.project(b.x0, b.y1, b.z1);
+  final t110 = v.project(b.x1, b.y1, b.z1);
+
+  // top face
+  _paintQuad(canvas, [t000, t100, t110, t010], _withAlpha(base, alpha), stroke);
+  // the two near vertical faces: those whose outward normal points
+  // toward the viewer = faces with the LARGEST projected bottom-edge y
+  final faces = [
+    ([c000, c100, t100, t000], (c000.dy + c100.dy)), // z0 face
+    ([c010, c110, t110, t010], (c010.dy + c110.dy)), // z1 face
+    ([c000, c010, t010, t000], (c000.dy + c010.dy)), // x0 face
+    ([c100, c110, t110, t100], (c100.dy + c110.dy)), // x1 face
+  ]..sort((a, bb) => bb.$2.compareTo(a.$2));
+  _paintQuad(
+      canvas, faces[0].$1, _withAlpha(_shade(base, 0.78), alpha), stroke);
+  _paintQuad(
+      canvas, faces[1].$1, _withAlpha(_shade(base, 0.62), alpha), stroke);
+}
+
+/// b36 - the wizard's cinematic build: the floor fades in, the walls rise,
+/// then the cabinets extrude out of the floor one element at a time in
+/// depth order. Pure CustomPaint (NO WebView); shares [IsoView] and the
+/// editor's element builder, so what the client watches being built is
+/// EXACTLY what the studio then edits.
+class IsoBuildPainter extends CustomPainter {
+  IsoBuildPainter({
+    required this.plan,
+    required this.design,
+    required this.progress,
+  }) : super(repaint: progress);
+
+  final LayoutPlan plan;
+  final KitchenDesign design;
+
+  /// Overall build progress 0..1 (drive with an AnimationController).
+  final Animation<double> progress;
+
+  /// Phase boundaries, shared with the wizard's stage captions.
+  static const floorEnd = 0.20;
+  static const wallsEnd = 0.46;
+
+  static double _seg(double t, double a, double b) =>
+      ((t - a) / (b - a)).clamp(0.0, 1.0).toDouble();
+
+  static double _easeOut(double t) {
+    final u = 1.0 - t;
+    return 1.0 - u * u * u;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final t = progress.value;
+    final v = IsoView(plan, size, 0);
+    final w = plan.widthM, d = plan.depthM;
+    final floorT = _easeOut(_seg(t, 0.0, floorEnd));
+    final wallT = _easeOut(_seg(t, floorEnd - 0.04, wallsEnd));
+    final elsT = _seg(t, wallsEnd, 1.0);
+    const ink = Baytak.ink;
+    Paint strokeA(double a) => Paint()
+      ..color = ink.withValues(alpha: 0.55 * a)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8;
+
+    // floor: fades in while settling from a slight zoom
+    if (floorT > 0) {
+      final pts = [
+        v.project(0, 0, 0),
+        v.project(w, 0, 0),
+        v.project(w, 0, d),
+        v.project(0, 0, d),
+      ];
+      final cx = pts.fold(Offset.zero, (s, p) => s + p) / pts.length.toDouble();
+      final s = 0.88 + 0.12 * floorT;
+      _paintQuad(
+          canvas,
+          [for (final p in pts) cx + (p - cx) * s],
+          _withAlpha(_rgb(design.floorFinish.rgb), floorT),
+          strokeA(floorT));
+    }
+
+    // walls rise to their editor height (far full, near stubs)
+    if (wallT > 0) {
+      final built = planWalls(plan);
+      final wallC = _rgb(design.wallFinish.rgb);
+      for (final wall in Wall.values) {
+        if (!built.contains(wall)) continue;
+        final far = v.isFarWall(wall);
+        final h = (far ? IsoView._wallH : 0.14) * wallT;
+        final c = far ? wallC : _shade(wallC, 0.9);
+        final (p, q) = switch (wall) {
+          Wall.north => ((0.0, 0.0), (w, 0.0)),
+          Wall.south => ((0.0, d), (w, d)),
+          Wall.west => ((0.0, 0.0), (0.0, d)),
+          Wall.east => ((w, 0.0), (w, d)),
+        };
+        _paintQuad(canvas, [
+          v.project(p.$1, 0, p.$2),
+          v.project(q.$1, 0, q.$2),
+          v.project(q.$1, h, q.$2),
+          v.project(p.$1, h, p.$2),
+        ], c, strokeA(1));
+        // windows appear once the wall has risen past them
+        if (far && wallT > 0.9) {
+          final winA = _seg(wallT, 0.9, 1.0);
+          for (final win in plan.windows.where((x) => x.wall == wall)) {
+            final f = _RunFrame(wall, w, d);
+            final a = f.box(win.center - win.width / 2,
+                win.center + win.width / 2, 1.0, 1.9, 0, 0, Colors.white);
+            _paintQuad(canvas, [
+              v.project(a.x0, 1.0, a.z0),
+              v.project(a.x1, 1.0, a.z1),
+              v.project(a.x1, 1.9, a.z1),
+              v.project(a.x0, 1.9, a.z0),
+            ], _withAlpha(const Color(0xFFB7CFDA), winA), strokeA(winA));
+          }
+        }
+      }
+    }
+
+    // cabinets extrude out of the floor, staggered in draw (depth) order
+    if (elsT > 0) {
+      final els = _buildElements(plan, design);
+      final order = _depthOrder(els, v);
+      final n = order.length;
+      for (var rank = 0; rank < n; rank++) {
+        final start = n <= 1 ? 0.0 : 0.72 * rank / (n - 1);
+        final e = _easeOut(_seg(elsT, start, start + 0.28));
+        if (e <= 0) continue;
+        for (final b in els[order[rank]].boxes) {
+          _paintBox(
+              canvas,
+              v,
+              _EBox(b.x0, b.y0 * e, b.z0, b.x1, b.y1 * e, b.z1, b.c),
+              strokeA(e),
+              alpha: 0.35 + 0.65 * e);
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant IsoBuildPainter old) =>
+      old.plan != plan || old.design != design;
+}
+
+// ---------------------------------------------------------------------------
 // widget
 // ---------------------------------------------------------------------------
 class _IsoKitchenEditorState extends State<IsoKitchenEditor> {
@@ -1030,7 +1197,7 @@ class _ScenePainter extends CustomPainter {
     final design = s.widget.design;
     final v = IsoView(plan, size, s._k);
     final w = plan.widthM, d = plan.depthM;
-    final ink = Baytak.ink;
+    const ink = Baytak.ink;
     final stroke = Paint()
       ..color = ink.withValues(alpha: 0.55)
       ..style = PaintingStyle.stroke
@@ -1038,7 +1205,7 @@ class _ScenePainter extends CustomPainter {
 
     // floor
     final floor = _rgb(design.floorFinish.rgb);
-    _quad(canvas, [
+    _paintQuad(canvas, [
       v.project(0, 0, 0),
       v.project(w, 0, 0),
       v.project(w, 0, d),
@@ -1060,7 +1227,7 @@ class _ScenePainter extends CustomPainter {
         Wall.west => ((0.0, 0.0), (0.0, d)),
         Wall.east => ((w, 0.0), (w, d)),
       };
-      _quad(canvas, [
+      _paintQuad(canvas, [
         v.project(p.$1, 0, p.$2),
         v.project(q.$1, 0, q.$2),
         v.project(q.$1, h, q.$2),
@@ -1072,7 +1239,7 @@ class _ScenePainter extends CustomPainter {
           final f = _RunFrame(wall, w, d);
           final a = f.box(win.center - win.width / 2, win.center + win.width / 2,
               1.0, 1.9, 0, 0, Colors.white);
-          _quad(canvas, [
+          _paintQuad(canvas, [
             v.project(a.x0, 1.0, a.z0),
             v.project(a.x1, 1.0, a.z1),
             v.project(a.x1, 1.9, a.z1),
@@ -1094,7 +1261,7 @@ class _ScenePainter extends CustomPainter {
       final island = s._mode == _DragMode.island && e.kind == _EKind.island;
       final ghosted = hidden || island;
       for (final b in e.boxes) {
-        _drawBox(canvas, v, b, stroke,
+        _paintBox(canvas, v, b, stroke,
             alpha: ghosted ? 0.25 : 1.0, highlight: selected);
       }
     }
@@ -1115,45 +1282,6 @@ class _ScenePainter extends CustomPainter {
               ..strokeWidth = 2);
       }
     }
-  }
-
-  void _drawBox(Canvas canvas, IsoView v, _EBox b, Paint stroke,
-      {double alpha = 1.0, bool highlight = false}) {
-    final base = highlight
-        ? Color.lerp(b.c, Baytak.brass, 0.25)!
-        : b.c;
-    // three visible faces of an axis-aligned box under this projection:
-    // top, view-south, view-east. Compute via rotated corners.
-    final c000 = v.project(b.x0, b.y0, b.z0);
-    final c100 = v.project(b.x1, b.y0, b.z0);
-    final c010 = v.project(b.x0, b.y0, b.z1);
-    final c110 = v.project(b.x1, b.y0, b.z1);
-    final t000 = v.project(b.x0, b.y1, b.z0);
-    final t100 = v.project(b.x1, b.y1, b.z0);
-    final t010 = v.project(b.x0, b.y1, b.z1);
-    final t110 = v.project(b.x1, b.y1, b.z1);
-
-    // top face
-    _quad(canvas, [t000, t100, t110, t010], _withA(base, alpha), stroke);
-    // the two near vertical faces: those whose outward normal points
-    // toward the viewer = faces with the LARGEST projected bottom-edge y
-    final faces = [
-      ([c000, c100, t100, t000], (c000.dy + c100.dy)), // z0 face
-      ([c010, c110, t110, t010], (c010.dy + c110.dy)), // z1 face
-      ([c000, c010, t010, t000], (c000.dy + c010.dy)), // x0 face
-      ([c100, c110, t110, t100], (c100.dy + c110.dy)), // x1 face
-    ]..sort((a, bb) => bb.$2.compareTo(a.$2));
-    _quad(canvas, faces[0].$1, _withA(_shade(base, 0.78), alpha), stroke);
-    _quad(canvas, faces[1].$1, _withA(_shade(base, 0.62), alpha), stroke);
-  }
-
-  Color _withA(Color c, double a) =>
-      a >= 1.0 ? c : c.withValues(alpha: a);
-
-  void _quad(Canvas canvas, List<Offset> pts, Color fill, Paint stroke) {
-    final path = Path()..addPolygon(pts, true);
-    canvas.drawPath(path, Paint()..color = fill);
-    canvas.drawPath(path, stroke);
   }
 
   @override

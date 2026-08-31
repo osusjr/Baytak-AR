@@ -7,7 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:baytak_ar/data/catalog.dart';
 import 'package:baytak_ar/main.dart';
+import 'package:baytak_ar/screens/design_studio_screen.dart';
+import 'package:baytak_ar/screens/new_kitchen_wizard.dart';
 import 'package:baytak_ar/services/ai_client.dart';
+import 'package:baytak_ar/services/auto_planner.dart';
 import 'package:baytak_ar/services/analytics.dart';
 import 'package:baytak_ar/services/device_id.dart';
 import 'package:baytak_ar/services/kitchen_design.dart';
@@ -23,7 +26,9 @@ import 'package:baytak_ar/services/scan_cache.dart';
 import 'package:baytak_ar/state/app_state.dart';
 import 'package:baytak_ar/theme.dart';
 import 'package:baytak_ar/widgets/iso_kitchen_editor.dart';
-import 'package:flutter/material.dart' show Size;
+import 'dart:ui' show PictureRecorder;
+
+import 'package:flutter/material.dart';
 
 void main() {
   setUpAll(() {
@@ -1540,6 +1545,140 @@ Here you go:
       ]) {
         expect(v, contains(id));
       }
+    });
+  });
+
+  group('Auto-planner (b36)', () {
+    // Comparable signature: the normalizer may re-order runs, so compare
+    // sorted geometry, not list order.
+    String sig(LayoutPlan p) {
+      final runs = [
+        for (final r in p.runs)
+          {
+            'wall': r.wall.name,
+            'a': (r.a * 1e4).round(),
+            'b': (r.b * 1e4).round(),
+            'sink': r.sinkAt == null ? null : (r.sinkAt! * 1e4).round(),
+            'range': r.rangeAt == null ? null : (r.rangeAt! * 1e4).round(),
+            'fridge': r.fridge,
+            'tall': r.tall,
+            'uppers': r.uppers,
+          }
+      ]..sort((x, y) => x['wall'] != y['wall']
+          ? (x['wall'] as String).compareTo(y['wall'] as String)
+          : (x['a'] as int).compareTo(y['a'] as int));
+      final i = p.island;
+      return jsonEncode({
+        'runs': runs,
+        'island': i == null
+            ? null
+            : [
+                (i.x0 * 1e4).round(),
+                (i.z0 * 1e4).round(),
+                (i.w * 1e4).round(),
+                (i.d * 1e4).round(),
+                i.seating.name,
+              ],
+      });
+    }
+
+    test('sweep: every auto plan is already in normal form', () {
+      for (var w10 = 22; w10 <= 80; w10 += 2) {
+        for (var d10 = 18; d10 <= 80; d10 += 2) {
+          for (final island in [true, false]) {
+            for (final tall in [true, false]) {
+              final w = w10 / 10, d = d10 / 10;
+              final plan =
+                  autoPlan(w, d, allowIsland: island, allowTall: tall);
+              final before = sig(plan);
+              final notes = normalizePlan(plan);
+              final label = '$w x $d isl=$island tall=$tall';
+              expect(notes, isEmpty, reason: '$label -> $notes');
+              expect(sig(plan), before, reason: '$label drifted');
+              expect(plan.runs.any((r) => r.fridge != null), isTrue,
+                  reason: '$label lost the fridge');
+              expect(plan.runs.any((r) => r.sinkAt != null), isTrue,
+                  reason: '$label lost the sink');
+            }
+          }
+        }
+      }
+    });
+
+    test('K-01 demo room -> L + island + pantry (frozen from the proto)', () {
+      final p = autoPlan(4.2, 3.4);
+      expect(p.summary.split(' - ').first, 'L-shape + island + pantry');
+      final north = p.runs.firstWhere((r) => r.wall == Wall.north);
+      expect(north.sinkAt, isNotNull);
+      expect(north.rangeAt, isNotNull);
+      expect((north.sinkAt! - north.rangeAt!).abs(),
+          greaterThanOrEqualTo(0.95));
+      final tall = p.runs.firstWhere((r) => r.tall);
+      expect(tall.wall, Wall.west);
+      expect(tall.b - tall.a, closeTo(0.60, 1e-9));
+      final fridge = p.runs.firstWhere((r) => r.fridge != null);
+      expect(fridge.wall, Wall.west);
+      expect(fridge.fridge, 'end');
+      expect(p.island, isNotNull);
+      expect(p.island!.w, closeTo(1.65, 0.01));
+      expect(p.island!.d, closeTo(0.90, 1e-9));
+      expect(p.island!.x0, closeTo(1.65, 0.01));
+      expect(p.island!.z0, closeTo(1.58, 0.01));
+      expect(p.windows, hasLength(1));
+      expect(p.windows.first.center, closeTo(north.sinkAt!, 1e-9));
+    });
+
+    test('layout ladder + switches (spot cases from the proto)', () {
+      String layoutOf(LayoutPlan p) => p.summary.split(' - ').first;
+      expect(layoutOf(autoPlan(5.2, 4.2)), 'U-shape + island + pantry');
+      expect(layoutOf(autoPlan(3.3, 3.1)), 'U-shape');
+      expect(layoutOf(autoPlan(2.5, 3.0)), 'Galley');
+      expect(layoutOf(autoPlan(2.2, 1.8)), 'Single wall');
+      expect(layoutOf(autoPlan(5.0, 1.9)), 'Single wall'); // corridor
+      expect(autoPlan(5.2, 4.2, allowIsland: false).island, isNull);
+      expect(autoPlan(5.2, 4.2, allowTall: false).runs.any((r) => r.tall),
+          isFalse);
+      // the U cooker lives on the east wall, away from sink and fridge
+      final u = autoPlan(5.2, 4.2);
+      expect(u.runs.firstWhere((r) => r.rangeAt != null).wall, Wall.east);
+    });
+
+    test('IsoBuildPainter paints every phase without throwing', () {
+      final plan = autoPlan(4.2, 3.4);
+      final design = KitchenDesign.fromPalette(plan.palette);
+      final rec = PictureRecorder();
+      final canvas = Canvas(rec, const Rect.fromLTWH(0, 0, 360, 300));
+      for (final t in [0.0, 0.1, 0.3, 0.5, 0.8, 1.0]) {
+        IsoBuildPainter(
+          plan: plan,
+          design: design,
+          progress: AlwaysStoppedAnimation(t),
+        ).paint(canvas, const Size(360, 300));
+      }
+      rec.endRecording();
+    });
+
+    testWidgets('wizard: form -> cinematic build -> the Design studio',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      await tester.pumpWidget(MaterialApp(
+          theme: buildTheme(), home: const NewKitchenWizardScreen()));
+      await tester.pump();
+      // default 4.2 x 3.4 shows the live auto-plan label
+      expect(find.text('L-shape + island + pantry'), findsOneWidget);
+      // the CTA sits below the fold of the lazily-built ListView
+      await tester.scrollUntilVisible(find.text('Build my kitchen'), 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pump();
+      await tester.tap(find.text('Build my kitchen'));
+      await tester.pump();
+      expect(find.text('Skip'), findsOneWidget);
+      // run the build animation, the completion hold, and the route swap
+      await tester.pump(const Duration(milliseconds: 3900));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byType(DesignStudioScreen), findsOneWidget);
     });
   });
 }
